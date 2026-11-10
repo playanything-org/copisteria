@@ -99,6 +99,7 @@ class Staff:
     system: int = -1
     pos: int = -1                  # index within its system (0 = top)
     line_x0: float | None = None   # where its lines start with near-white taken as paper (_line_starts), if found
+    one_line: bool = False         # a one-line staff, taken on the percussion clef that stands on it (_one_line_staves)
 
     @property
     def mid(self) -> float:
@@ -819,7 +820,8 @@ def _one_line_staves(lines: list, staves: list[Staff], syms: list[Sym]) -> list[
         line = min(near, key=lambda ln: abs(ln.y - c.cy))
         if any(o.y0 - ONE_LINE_APART * sp < line.y < o.y1 + ONE_LINE_APART * sp for o in staves + out):
             continue
-        out.append(Staff(bars=[], sp=sp, y0=line.y - 2 * sp, y1=line.y + 2 * sp, x0=float(line.x0), x1=float(line.x1)))
+        out.append(Staff(bars=[], sp=sp, y0=line.y - 2 * sp, y1=line.y + 2 * sp, x0=float(line.x0), x1=float(line.x1),
+                         one_line=True))
     return out
 
 
@@ -1070,27 +1072,57 @@ def _assign(syms: list[Sym], staves: list[Staff], only: list[Sym] | None = None)
             s.staff, s.bar = best, bbar
 
 
-DROP_SHARE = 0.34             # a staff holding less than this share of the page's median staff may go (_with_layout)
+DROP_SHARE = 0.34             # a staff with less than this share of the page's median staff's bars may go (_with_layout)
+SPARE_HOLDS = 2               # a staff the finder left joins only if this many sure symbols stand on it
 
 
-def _staff_holds(syms: list[Sym], st: Staff) -> int:
-    """What stands on a staff: its measure boxes, and the notes, rests and clefs the detector is sure of."""
-    return len(st.bars) + sum(1 for s in syms if s.fam in ("note", "rest", "clef") and s.p >= 0.5 and
-                              st.x0 <= s.cx <= st.x1 and st.y0 - st.sp <= s.cy <= st.y1 + st.sp)
+def _staff_bars(st: Staff, width: float) -> float:
+    """How much of a staff a staff is: the measure boxes on it, scaled by its width against the page's staves (an
+    inset ossia runs a bar or two; a line of text read as a staff has a box or none). A staff of rests has as many
+    boxes as its neighbours, so what it holds does not count: a silent staff is a staff."""
+    return math.inf if st.one_line else len(st.bars) * min(1.0, (st.x1 - st.x0) / max(1.0, width))
 
 
-def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list[Staff], linked: list[bool],
-                 said: list[str], add: bool) -> tuple[dict, list[Staff], list[bool]]:
+def _on_staff(syms: list[Sym], st: Staff) -> int:
+    """The symbols the detector is sure of that stand on a staff: notes, rests, bar rests and clefs."""
+    return sum(1 for s in syms if s.fam in ("note", "rest", "mRest", "multiRest", "clef") and s.p >= 0.5 and
+               st.x0 <= s.cx <= st.x1 and st.y0 - st.sp <= s.cy <= st.y1 + st.sp)
+
+
+def _apart(syms: list[Sym], a: Staff, b: Staff) -> bool:
+    """Two staves whose bar lines plainly do not line up: each has at least two of its own over their common
+    stretch, and fewer than half of either's have a partner on the other. Staves of one system share their bar
+    lines; with fewer to go by, nothing is said."""
+    sp = (a.sp + b.sp) / 2
+    lo, hi = max(a.x0, b.x0) - sp, min(a.x1, b.x1) + sp
+
+    def edges(st):
+        return [syms[k].box[2] for k in st.bars[:-1] if not syms[k].synthetic and lo <= syms[k].box[2] <= hi]
+
+    ea, eb = edges(a), edges(b)
+    if len(ea) < 2 or len(eb) < 2:
+        return False
+    tol = ALIGN_TOL_SP * sp
+    hit = lambda xs, ys: sum(1 for x in xs if any(abs(x - y) <= tol for y in ys)) / len(xs)      # noqa: E731
+    return hit(ea, eb) < 0.5 and hit(eb, ea) < 0.5
+
+
+def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list[Staff], links_of,
+                 add: bool) -> tuple[dict, list[Staff], list[bool]]:
     """The page read with a layout its caller knows: the staves of each of its systems, counted top to bottom (from
     a reading of the whole score at a glance, where each page is a thumbnail: enough to count staves, and it sees
-    what one page's ink does not say). Returns (what it did, the staves, the pairs joined).
+    what one page's ink does not say). ``links_of``: staves -> (pairs joined, what said so), _links for this page.
+    Returns (what it did, the staves, the pairs joined).
 
     The layout decides how the staves found are grouped into systems, once they are as many as it counts. Where
-    more were found, the weakest go -- those holding less than DROP_SHARE of what the page's median staff holds
-    (an inset ossia, a line of text read as a staff, a second reading of one staff); where fewer, the likeliest of
-    the staves the finder saw and did not take join (``spare``, when ``add``). A layout that cannot be met that
-    way is not used: the page is read as without it, and ``why`` says so. The notes are read as ever; the layout
-    says only which staves there are and which are played together."""
+    more were found, the weakest go -- those with less than DROP_SHARE of the page's median staff's bars (an inset
+    ossia, a line of text read as a staff, a second reading of one staff), never a staff for being silent; where
+    fewer, the likeliest of the staves the finder saw and did not take join (``spare``, when ``add``), each only
+    with SPARE_HOLDS sure symbols on it. The layout is evidence too, and may be wrong: it is not used where it cannot
+    be met that way, where it would part two staves a line of ink joins, or where it would join two whose bar lines
+    plainly do not line up. The page is then read as without it, and ``why`` says so. The notes are read as ever;
+    the layout says only which staves there are and which are played together."""
+    linked, said = links_of(staves)
     sizes, run = [], 0
     for k in range(len(staves)):
         if k and not linked[k - 1]:
@@ -1104,17 +1136,22 @@ def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list
     except (TypeError, ValueError):
         target = []
     prior = {"target": target, "own": sizes, "said": list(said), "used": False, "dropped": 0, "added": 0}
+
+    def unused(why: str):
+        prior.update(dropped=0, added=0, why=why)
+        return prior, staves, linked
+
     total = sum(target)
     if not target or any(n < 1 for n in target):
-        prior["why"] = "the layout counts no staves"
-        return prior, staves, linked
+        return unused("the layout counts no staves")
     fitted = sorted(staves, key=lambda st: st.mid)
     if len(fitted) > total:
-        holds = {id(st): _staff_holds(syms, st) for st in fitted}
-        ranked = sorted(holds.values())
+        widths = sorted(st.x1 - st.x0 for st in fitted)
+        bars = {id(st): _staff_bars(st, widths[len(widths) // 2]) for st in fitted}
+        ranked = sorted(bars.values())
         floor = DROP_SHARE * ranked[len(ranked) // 2]
-        for st in sorted(fitted, key=lambda st: holds[id(st)]):
-            if len(fitted) == total or holds[id(st)] >= floor:
+        for st in sorted(fitted, key=lambda st: bars[id(st)]):
+            if len(fitted) == total or bars[id(st)] >= floor:
                 break
             fitted = [o for o in fitted if o is not st]
         prior["dropped"] = len(staves) - len(fitted)
@@ -1122,18 +1159,25 @@ def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list
         for st in spare:
             if len(fitted) == total:
                 break
-            fitted.append(st)
+            if _on_staff(syms, st) >= SPARE_HOLDS:
+                fitted.append(st)
         prior["added"] = len(fitted) - len(staves)
         fitted.sort(key=lambda st: st.mid)
     if len(fitted) != total:
-        prior.update(dropped=0, added=0, why=f"{len(staves)} staves found and {total} counted")
-        return prior, staves, linked
+        return unused(f"{len(staves)} staves found and {total} counted")
     ends, at = set(), 0
     for n in target[:-1]:
         at += n
         ends.add(at)
+    forced = [k not in ends for k in range(1, total)]
+    _, told = links_of(fitted) if prior["dropped"] or prior["added"] else (linked, said)
+    for k in range(1, total):
+        if not forced[k - 1] and told[k - 1] == "line":
+            return unused("the layout parts staves a line joins")
+        if forced[k - 1] and told[k - 1] != "line" and _apart(syms, fitted[k - 1], fitted[k]):
+            return unused("the layout joins staves whose bar lines do not line up")
     prior["used"] = True
-    return prior, fitted, [k not in ends for k in range(1, total)]
+    return prior, fitted, forced
 
 
 CAND_SKIP = ("measure", "barLine")         # structure is decided before candidates join
@@ -1168,8 +1212,8 @@ def build(dets: list[dict], width: float, height: float, image=None, cands: list
         _snap_bars(syms, staves)
     linked, prior = None, None
     if layout is not None:
-        linked, said = _links(syms, staves, mask, gray)
-        prior, staves, linked = _with_layout(layout, syms, staves, spare, linked, said, add=ink_path)
+        prior, staves, linked = _with_layout(layout, syms, staves, spare, lambda sts: _links(syms, sts, mask, gray),
+                                             add=ink_path)
     systems = _systems(syms, staves, mask, ink=ink_path, levels=gray, linked=linked)
     _assign(syms, staves)
     if cands:

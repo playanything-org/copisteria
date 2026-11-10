@@ -476,31 +476,49 @@ def test_a_layout_the_caller_knows_groups_the_staves_into_its_systems(monkeypatc
     assert [len(sy.staves) for sy in front.build(right + left, 400, 400, layout=[2]).systems] == [2]
 
 
-def test_a_layout_drops_only_a_staff_that_holds_little_and_is_not_used_where_it_cannot_be_met(monkeypatch):
+def test_a_layout_drops_only_what_is_hardly_a_staff_and_is_not_used_where_it_cannot_be_met(monkeypatch):
     from copisteria import links
     monkeypatch.setattr(links, "load", lambda: None)
     right, left = staff_row(180, [0, 100, 200, 300]), staff_row(260, [0, 100, 200, 300])
-    notes = [det("note_quarter", (50 + 100 * k, y + 15, 60 + 100 * k, y + 25), staff_position=0) for k in range(3) for y in (180, 260)]
+    notes = [det("note_quarter", (50 + 100 * k, 195, 60 + 100 * k, 205), staff_position=0) for k in range(3)]
     inset = staff_row(60, [200, 300])                               # an ossia over one bar
     L = front.build(inset + right + left + notes, 400, 400, layout=[2])
     assert [len(sy.staves) for sy in L.systems] == [2] and L.prior["dropped"] == 1 and L.staves[0].y0 == 180
-    # a third staff that holds as much as the others is no inset: the layout is not used, and says why
-    full = staff_row(60, [0, 100, 200, 300]) + [det("note_quarter", (50 + 100 * k, 75, 60 + 100 * k, 85), staff_position=0) for k in range(3)]
-    L = front.build(full + right + left + notes, 400, 400, layout=[2])
+    # a third staff as long as the others is no inset, silent or not (the left hand above holds no note either):
+    # the layout is not used, and says why
+    L = front.build(staff_row(60, [0, 100, 200, 300]) + right + left + notes, 400, 400, layout=[2])
     assert len(L.staves) == 3 and not L.prior["used"] and L.prior["why"] == "3 staves found and 2 counted"
     assert [len(sy.staves) for sy in L.systems] == L.prior["own"]
     # a layout that counts nothing is not one
     assert front.build(right + left, 400, 400, layout=[]).prior["used"] is False
 
 
-def test_a_layout_that_counts_more_staves_takes_the_likeliest_the_finder_left():
+def test_a_layout_that_counts_more_staves_takes_the_likeliest_the_finder_left_if_something_stands_on_it():
     staves = [front.Staff(bars=[], sp=10.0, y0=100.0, y1=140.0, x0=0.0, x1=400.0),
               front.Staff(bars=[], sp=10.0, y0=300.0, y1=340.0, x0=0.0, x1=400.0)]
     spare = [front.Staff(bars=[], sp=10.0, y0=200.0, y1=240.0, x0=0.0, x1=400.0),
              front.Staff(bars=[], sp=10.0, y0=420.0, y1=460.0, x0=0.0, x1=400.0)]
-    prior, fitted, linked = front._with_layout([3], [], staves, spare, [False], ["white"], add=True)
+    on = front.merge([det("rest_quarter", (50 + 100 * k, 215, 60 + 100 * k, 225)) for k in range(2)])
+    said = lambda sts: ([False] * (len(sts) - 1), ["white"] * (len(sts) - 1))      # noqa: E731
+    prior, fitted, linked = front._with_layout([3], on, staves, spare, said, add=True)
     assert prior["used"] and prior["added"] == 1 and [st.y0 for st in fitted] == [100.0, 200.0, 300.0] and linked == [True, True]
-    # none to take (or a page read from its measure boxes): as found
-    prior, fitted, linked = front._with_layout([3], [], staves, [], [False], ["white"], add=True)
+    # a spare line nothing stands on is no staff; nor is any on a page read from its measure boxes
+    prior, fitted, linked = front._with_layout([3], [], staves, spare, said, add=True)
     assert not prior["used"] and fitted == staves and linked == [False]
-    assert not front._with_layout([3], [], staves, spare, [False], ["white"], add=False)[0]["used"]
+    assert not front._with_layout([3], on, staves, spare, said, add=False)[0]["used"]
+
+
+def test_a_layout_is_not_used_against_a_line_of_ink_or_bar_lines_that_do_not_line_up(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    a, b = staff_row(100, [0, 100, 200, 300, 400]), staff_row(180, [0, 100, 200, 300, 400])
+    L = front.build(a + b, 500, 300)
+    line = lambda sts: ([True] * (len(sts) - 1), ["line"] * (len(sts) - 1))        # noqa: E731
+    prior, fitted, linked = front._with_layout([1, 1], L.syms, L.staves, [], line, add=False)
+    assert not prior["used"] and prior["why"] == "the layout parts staves a line joins" and linked == [True]
+    # two staves whose bar lines fall in different places are not one system, whatever the layout counts
+    c = staff_row(180, [0, 150, 250, 350, 400])
+    L = front.build(a + c, 500, 300)
+    assert [len(sy.staves) for sy in L.systems] == [1, 1]
+    L = front.build(a + c, 500, 300, layout=[2])
+    assert [len(sy.staves) for sy in L.systems] == [1, 1] and L.prior["why"] == "the layout joins staves whose bar lines do not line up"
