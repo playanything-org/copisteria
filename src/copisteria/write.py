@@ -90,6 +90,8 @@ class Event:
     pre: list = field(default_factory=list)         # directions written before the note: (kind, payload, below)
     post: list = field(default_factory=list)        # ... and after it
     copied: bool = False                            # a measure-repeat copy (spanners attach to the original only)
+    read_voice: int = 0                             # the voice the model read it in, where it is written in another
+    struck: bool = False                            # a chord member by standing with its note, not by the model's word
     onset: float | None = None                      # the model's onset in the bar (quarters) and its confidence
     onset_p: float = 0.0
     dist: dict | None = None                        # the model's onset / tuplet distributions (joint decoding)
@@ -523,15 +525,17 @@ def _voices(events: list[Event], sp: float, single_staff_part: bool = True,
     # no voice holds two events at once: what overlaps goes to a voice of its own, while the staff has one free
     # (the next above it first, so that the voice stays the staff's first where it was)
     for v in sorted(vs):
-        split = _unlapped(vs[v])
+        split, struck = _unlapped(vs[v], sp)
         if split[0] is vs[v]:
             continue                                 # nothing overlapped
         free = sorted((n for n in range(1, VOICES + 1) if n not in vs), key=lambda n: (n < v, n))
         if len(free) >= len(split) - 1:
+            for e in struck:
+                e.chord = e.struck = True
             vs[v] = split[0]
             for n, lane in zip(free, split[1:]):
                 for e in lane:
-                    e.voice = n
+                    e.voice, e.read_voice = n, v
                 vs[n] = lane
             if lanes is not None:
                 lanes[v] = [v, *free[:len(split) - 1]]
@@ -541,21 +545,28 @@ def _voices(events: list[Event], sp: float, single_staff_part: bool = True,
 
 
 VOICES = 4                      # voices a staff is written with (a part's voice numbers run four to a staff)
+CHORD_REACH_SP = 1.5            # notes of one chord stand within this of each other across the page (staff spaces)
 
 
-def _unlapped(evs: list[Event]) -> list[list[Event]]:
-    """A voice's events as lanes in none of which two events sound at once. Where the model's onset places an event
-    before the one before it has ended (a keyboard staff's two voices read as one; an onset read wrong), a voice
-    written with a backup inside it holds both at once, and a reader of the score that keeps one event at a time in a
-    voice drops the other. Each event goes to a lane free at its start: the one that ends in a tied note of its
-    pitch if there is one (a tie is kept inside one voice where it can be), else the one the event before it went
-    to (a run of notes stays together, with its beam and its tuplet), else the first. A chord's members and the
-    grace notes before a note go with it; a rest that does not fit the voice says nothing and is left out, and
-    grace notes before it go with the next event. The lane that ends in a tied note comes first, and keeps the
-    voice's number: its tie runs on into the next bar's voice. A voice without such an event comes back as it is,
-    one lane, untouched."""
+def _unlapped(evs: list[Event], sp: float) -> tuple[list[list[Event]], list[Event]]:
+    """A voice's events as lanes in none of which two events sound at once, and the notes that become chord members
+    if the lanes are taken. Where the model's onset places an event before the one before it has ended (a keyboard
+    staff's two voices read as one; an onset read wrong), a voice written with a backup inside it holds both at
+    once, and a reader of the score that keeps one event at a time in a voice drops the other.
+
+    Notes that stand one over the other, at one time and of one length, are one chord, whatever the model called
+    them: they join the note they sound with (a left hand's bass note and chord in turn, the chord's notes read as
+    separate events at one onset, are one beamed line, not three voices). Standing apart on the page they are notes
+    in turn whose onset was read wrong, and are left as events of their own; so are a tuplet's notes.
+
+    Any other event goes to a lane free at its start: the one that ends in a tied note of its pitch if there is one
+    (a tie is kept inside one voice where it can be), else the one the event before it went to (a run of notes stays
+    together, with its beam and its tuplet), else the first. A chord's members and the grace notes before a note go
+    with it; a rest that does not fit the voice says nothing and is left out, and grace notes before it go with the
+    next event. The lane that ends in a tied note comes first, and keeps the voice's number: its tie runs on into
+    the next bar's voice. A voice without such an event comes back as it is, one lane, untouched."""
     if not any(e.kind == "gap" and e.dur < 0 for e in evs):
-        return [evs]
+        return [evs], []
     groups, pos, graces = [], Fraction(0), []
     for e in evs:
         if e.kind == "gap":
@@ -572,8 +583,27 @@ def _unlapped(evs: list[Event]) -> list[list[Event]]:
     def pitches(members, tied=False):
         return {(m.step, m.octave) for m in members if m.kind == "note" and m.grace == "none" and (m.tie or not tied)}
 
-    lanes, held, last = [], [], None            # a lane: [its events, where it has got to, the event it ends with]
+    def chord(members):
+        """What a group is as a chord: its notes' common length, or None (a rest, a grace note, a tuplet)."""
+        kinds = {(m.typ, m.dots, m.dur) for m in members}
+        plain = all(m.kind == "note" and m.grace == "none" and m.tup == "none" for m in members)
+        return next(iter(kinds)) if plain and len(kinds) == 1 else None
+
+    lanes, held, last, struck = [], [], None, []   # a lane: [its events, where it has got to, the event it ends with]
+    spans: dict[int, tuple] = {}                    # a lane (by id) -> when the event it ends with starts and ends
     for start, end, members in groups:
+        kind = chord(members) if end > start and not held else None
+        # (against the chord's first note, so that a chord does not grow note by note across the page; and never a
+        # pitch the chord already holds: a unison is two voices' note, and stays two)
+        over = [ln for ln in lanes if kind is not None and spans[id(ln)] == (start, end) and chord(ln[2]) == kind and
+                abs(ln[2][0].x - members[0].x) <= CHORD_REACH_SP * sp and
+                not {(m.step, m.alter, m.octave) for m in ln[2]} & {(m.step, m.alter, m.octave) for m in members}]
+        if over:
+            lane = min(over, key=lambda ln: abs(ln[2][0].x - members[0].x))
+            struck.extend(members)
+            lane[0].extend(members)
+            lane[2], last = lane[2] + members, lane
+            continue
         free = [ln for ln in lanes if ln[1] <= start]
         lane = next((ln for ln in free if pitches(ln[2], tied=True) & pitches(members)),
                     last if any(ln is last for ln in free) else free[0] if free else None)
@@ -588,11 +618,12 @@ def _unlapped(evs: list[Event]) -> list[list[Event]]:
         lane[0].extend(held + members)
         held = []
         lane[1], lane[2], last = end, members, lane
+        spans[id(lane)] = (start, end)
     if not lanes:
-        return [evs]
+        return [evs], []
     last[0].extend(held + graces)                 # grace notes after the last event stay after it
     keep = next((ln for ln in lanes if pitches(ln[2], tied=True)), lanes[0])
-    return [keep[0]] + [ln[0] for ln in lanes if ln is not keep]
+    return [keep[0]] + [ln[0] for ln in lanes if ln is not keep], struck
 
 
 def _tuplet_brackets(evs: list[Event]) -> None:
@@ -738,26 +769,30 @@ def _attach(rd: Reading, built: list, plans: list, texts: list, place: list, mas
         under = under_beam(b)
         if len(under) < 2:
             continue
-        voice = max({e.voice for e in under}, key=lambda v: sum(e.voice == v for e in under))
-        group = sorted((e for e in under if e.voice == voice), key=lambda e: e.x)
-        if len(group) < 2:
-            continue
-        lv = [BEAM_LEVEL[e.typ] for e in group]
-        for n in range(1, max(lv) + 1):
-            for i, e in enumerate(group):
-                if lv[i] < n:
-                    continue
-                prev = i > 0 and lv[i - 1] >= n
-                nxt = i + 1 < len(group) and lv[i + 1] >= n
-                val = ("continue" if prev and nxt else "begin" if nxt else "end" if prev else
-                       "forward hook" if i + 1 < len(group) else "backward hook")
-                if n == 1 and val.endswith("hook"):
-                    val = "begin" if i == 0 else "end"
-                e.beams.append((n, val))
-        for e in group:
-            claimed.add(id(e))
-            if not e.stem:
-                e.stem = "up" if b.cy < sym[e.si].cy else "down"
+        # the voice is the one the model read: where its events are written in two (_unlapped), the beam's notes in
+        # each are beamed there, not only those of the one that holds most
+        read = lambda e: e.read_voice or e.voice                           # noqa: E731
+        voice = max({read(e) for e in under}, key=lambda v: sum(read(e) == v for e in under))
+        for written in sorted({e.voice for e in under if read(e) == voice}):
+            group = sorted((e for e in under if read(e) == voice and e.voice == written), key=lambda e: e.x)
+            if len(group) < 2:
+                continue
+            lv = [BEAM_LEVEL[e.typ] for e in group]
+            for n in range(1, max(lv) + 1):
+                for i, e in enumerate(group):
+                    if lv[i] < n:
+                        continue
+                    prev = i > 0 and lv[i - 1] >= n
+                    nxt = i + 1 < len(group) and lv[i + 1] >= n
+                    val = ("continue" if prev and nxt else "begin" if nxt else "end" if prev else
+                           "forward hook" if i + 1 < len(group) else "backward hook")
+                    if n == 1 and val.endswith("hook"):
+                        val = "begin" if i == 0 else "end"
+                    e.beams.append((n, val))
+            for e in group:
+                claimed.add(id(e))
+                if not e.stem:
+                    e.stem = "up" if b.cy < sym[e.si].cy else "down"
 
     # slurs
     nums: dict[int, list] = {}                      # staff -> numbers in use, as (end order, number)
@@ -1431,8 +1466,12 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                         marks["end_clef"] = marks2["end_clef"] or marks["end_clef"]
                         marks["repeat_bar"] |= marks2["repeat_bar"]
                     if marks["repeat_bar"] and not ev and prev_events[k_i]:
+                        # (a copy is the bar as the model read it: its voice and its chords, not where and as
+                        # what the bar before came to be written, so that the copy is written as that bar was)
                         ev = [Event(**{**e.__dict__, "tie": False, "tie_stop": False, "marks": [], "beams": [],
-                                       "slurs": [], "pre": [], "post": [], "copied": True})
+                                       "slurs": [], "pre": [], "post": [], "copied": True,
+                                       "voice": e.read_voice or e.voice, "read_voice": 0,
+                                       "chord": e.chord and not e.struck, "struck": False})
                               for e in prev_events[k_i]]
                     read, lanes = {}, {}
                     vs = _voices(ev, L.staves[staff].sp, single_staff_part=len(pl.staves) == 1,

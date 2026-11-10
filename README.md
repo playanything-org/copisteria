@@ -39,6 +39,11 @@ Reading (what a page's MusicXML holds):
   is still written at the time the model gave it. Ties are paired along the voice as it was read; the notes of a
   tie, and a run of notes with its beam and its tuplet, stay in one voice where they can; and the staff's
   directions are written with the voice whose next event they stand at.
+- **A chord read as separate notes is one chord, and each voice under a beam is beamed** (`write.py` `_unlapped`,
+  `_attach`). A left hand's bass note and chord in turn stand under one beam; the model reads the chord's notes as
+  events of their own at one onset. Written in voices of their own they lost the beam, which went to the voice
+  that held most of its notes. Notes that stand one over the other, at one time and of one length, now join the
+  note they sound with as its chord; and where a beam's notes are still written in two voices, each is beamed.
 
 What a caller may tell the front end (`front.py` `build`, `read.py` `read`; without it nothing changes):
 

@@ -536,6 +536,38 @@ def test_a_voice_never_holds_two_events_at_once():
     tied = [note(10, 0.0, typ="whole", step="E"), note(40, 2.0, typ="quarter", step="B", tie=True), note(60, 3.0, typ="quarter", step="B", tie=True)]
     vs = write._voices(tied, 10.0, single_staff_part=False, bar_len=F(4))
     assert [e.step for e in vs[1] if e.kind == "note"] == ["B", "B"] and [e.step for e in vs[2] if e.kind == "note"] == ["E"]
+    # notes that stand one over the other at one time with one length are one chord, whatever the model called them:
+    # a bass note, three eighths at the second eighth, a bass note and two more are one line of four eighths
+    hand = [note(10, 0.0, typ="eighth", step="G"), note(30, 0.5, typ="eighth", step="B"), note(31, 0.5, typ="eighth", step="D"),
+            note(33, 0.5, typ="eighth", step="F"), note(50, 1.0, typ="eighth", step="A"), note(70, 1.5, typ="eighth", step="C"),
+            note(72, 1.5, typ="eighth", step="E")]
+    vs = write._voices(hand, 10.0, single_staff_part=False, bar_len=F(2))
+    assert sorted(vs) == [1] and times(vs[1]) == [(F(0), "G"), (F(1, 2), "B"), (F(1, 2), "D"), (F(1, 2), "F"), (F(1), "A"), (F(3, 2), "C"), (F(3, 2), "E")]
+    assert [e.chord for e in vs[1] if e.kind == "note"] == [False, False, True, True, False, False, True]
+    # a note of a pitch the chord already holds is two voices' unison, and stays an event of its own; and a chord takes
+    # notes that stand by its first, not by one another across the page
+    unison = [note(10, 0.0, typ="eighth", step="G"), note(11, 0.0, typ="eighth", step="G"), note(30, 0.5, typ="eighth", step="B")]
+    vs = write._voices(unison, 10.0, single_staff_part=False, bar_len=F(2))
+    assert sorted(vs) == [1, 2] and not any(e.chord for evs in vs.values() for e in evs)
+    chain = [note(10 + 12 * k, 0.0, typ="eighth", step=s) for k, s in enumerate("CDEF")]
+    vs = write._voices(chain, 10.0, single_staff_part=False, bar_len=F(2))
+    assert sorted(vs) == [1, 2] and [[e.step for e in vs[v] if e.kind == "note"] for v in (1, 2)] == [["C", "D"], ["E", "F"]]
+    assert [e.step for evs in vs.values() for e in evs if e.chord] == ["D", "F"]
+    # standing apart on the page they are notes in turn whose onset was read wrong: events of their own, as before
+    apart = [note(10, 0.0, typ="eighth", step="G"), note(30, 0.5, typ="eighth", step="B"), note(60, 0.5, typ="eighth", step="D")]
+    vs = write._voices(apart, 10.0, single_staff_part=False, bar_len=F(2))
+    assert sorted(vs) == [1, 2] and not any(e.chord for evs in vs.values() for e in evs)
+    # so are notes at one time of different lengths, and a tuplet's notes
+    mixed = [note(10, 0.0, typ="quarter", step="G"), note(12, 0.0, typ="eighth", step="B"), note(30, 0.5, typ="eighth", step="D")]
+    vs = write._voices(mixed, 10.0, single_staff_part=False, bar_len=F(2))
+    assert sorted(vs) == [1, 2] and not any(e.chord for evs in vs.values() for e in evs)
+    triplet = [note(10 + k, 0.0, typ="eighth", step=s, tup="3/2") for k, s in enumerate("GB")]
+    assert not any(e.chord for evs in write._voices(triplet, 10.0, single_staff_part=False, bar_len=F(2)).values() for e in evs)
+    # with every voice of the staff taken, the voice is left as it was read and no note becomes a chord's
+    full = [E(x=5 + n, kind="rest", typ="whole", voice=n, onset=0.0, onset_p=1.0) for n in (2, 3, 4)]
+    crowded = [note(10, 0.0, typ="quarter", step="G"), note(11, 0.0, typ="eighth", step="B"), note(12, 0.0, typ="eighth", step="D")]
+    vs = write._voices(crowded + full, 10.0, single_staff_part=False, bar_len=F(4))
+    assert not any(e.chord for e in vs[1]) and any(e.kind == "gap" and e.dur < 0 for e in vs[1])
     # a run of notes stays in the lane it began in, though the first lane falls free under it: a triplet over a half
     # note keeps its three notes, its bracket and its beam in one voice
     run = [note(10, 0.0, typ="half", step="C")] + [note(20 + 10 * k, onset, typ="eighth", step="G", tup="3/2")
@@ -641,6 +673,44 @@ def test_a_divided_bars_directions_are_written_at_their_own_time(monkeypatch):
     # voice as read
     assert bar([(44, "note_whole", -4, 0.0), (40, "note_quarter", 0, 0.0), *quarters[1:], last], marks, voice=4) == \
         ["E1", "backup4", "B4", "B4", "dynamic", "B4", "clef", "F4"]
+
+
+def test_a_chord_read_as_separate_notes_keeps_its_beam_and_each_voice_under_a_beam_is_beamed(monkeypatch):
+    """A left hand's bass note and chord in turn, four eighths under one beam: the model reads the chord's notes as
+    events of their own at one onset. They are the bass line's chords, in its voice, and the beam runs over all four.
+    Where a beam's notes are written in two voices because their onsets overlap, the notes in each are beamed."""
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+
+    def bar(notes, beam):
+        dets = staff_row(100, [0, 200]) + [det("meterSig_2_4", (10, 100, 20, 140)), det("beam", beam)]
+        dets += [det("note_eighth", (x - 5, 115 - pos * 5, x + 5, 125 - pos * 5), staff_position=pos) for x, pos, _ in notes]
+        L = front.build(dets, 300, 300)
+        by, tok = {(x, pos): onset for x, pos, onset in notes}, {}
+        for sym in L.syms:
+            real = {"real": {"p": 1.0, "det": 1.0, "ev": 0}}
+            if sym.fam == "measure":
+                tok[sym.i] = {**real, "cls": {"v": "measure"}, "key": {"v": 0}, "time": {"v": "2/4"}, "clef": {"v": "G2"}}
+            elif sym.fam == "note":
+                onset = by[(round(sym.cx), round((120 - sym.cy) / 5))]
+                tok[sym.i] = {**real, "cls": {"v": "note_eighth"}, "dots": {"v": 0}, "pos": {"v": round((120 - sym.cy) / 5)}, "voice": {"v": 1},
+                              "tup": {"v": "none"}, "alter": {"v": 0}, "grace": {"v": "none"}, "chord": 0.0, "tie": 0.0, "onset": onset, "onset_p": 1.0}
+            else:
+                tok[sym.i] = {**real, "cls": {"v": sym.cls}}
+        root = ET.fromstring(write.write(_reading(L, tok)).split("\n", 2)[2])
+        return [(n.findtext("pitch/step"), n.findtext("voice"), n.find("chord") is not None, [b.text for b in n.findall("beam")])
+                for n in root.find(".//measure").findall("note") if n.find("rest") is None]
+
+    beam = (40, 80, 172, 86)
+    # G, then B and D one over the other at the second eighth, then A, then C and E: one voice, chords, one beam
+    hand = [(45, -4, 0.0), (85, 0, 0.5), (86, 2, 0.5), (125, -3, 1.0), (165, 1, 1.5), (166, 3, 1.5)]
+    assert bar(hand, beam) == [("E", "1", False, ["begin"]), ("B", "1", False, ["continue"]), ("D", "1", True, []),
+                               ("F", "1", False, ["continue"]), ("C", "1", False, ["end"]), ("E", "1", True, [])]
+    # four eighths under one beam whose third is read before the second has ended: two voices, each beamed
+    run = [(45, 0, 0.0), (85, 0, 0.5), (125, 0, 0.75), (165, 0, 1.25)]
+    written = bar(run, beam)
+    assert sorted(v for _, v, _, _ in written) == ["1", "1", "2", "2"]
+    assert all(beams in (["begin"], ["end"]) for _, _, _, beams in written)
 
 
 def test_a_line_with_a_percussion_clef_on_it_is_a_one_line_staff():
