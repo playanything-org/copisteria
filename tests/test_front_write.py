@@ -469,9 +469,9 @@ def test_a_layout_the_caller_knows_groups_the_staves_into_its_systems(monkeypatc
     assert [len(sy.staves) for sy in L.systems] == [3]
     assert L.prior["used"] and L.prior["own"] == [1, 2] and L.prior["target"] == [3]
     assert [L.staves[k].system for k in range(3)] == [0, 0, 0] and [L.staves[k].pos for k in range(3)] == [0, 1, 2]
-    # and the other way: two staves whose bar lines line up are one system to the front end, two to the page
+    # a layout joins, it does not part: two staves the front end joins stay one system, whatever was counted
     L = front.build(right + left, 400, 400, layout=[1, 1])
-    assert [len(sy.staves) for sy in L.systems] == [1, 1] and L.prior["own"] == [2]
+    assert [len(sy.staves) for sy in L.systems] == [2] and L.prior["why"] == "the layout parts staves the page joins"
     # a layout that says what the front end found changes nothing
     assert [len(sy.staves) for sy in front.build(right + left, 400, 400, layout=[2]).systems] == [2]
 
@@ -508,14 +508,15 @@ def test_a_layout_that_counts_more_staves_takes_the_likeliest_the_finder_left_if
     assert not front._with_layout([3], on, staves, spare, said, add=False)[0]["used"]
 
 
-def test_a_layout_is_not_used_against_a_line_of_ink_or_bar_lines_that_do_not_line_up(monkeypatch):
+def test_a_layout_does_not_part_what_the_page_joins_nor_join_bar_lines_that_do_not_line_up(monkeypatch):
     from copisteria import links
     monkeypatch.setattr(links, "load", lambda: None)
     a, b = staff_row(100, [0, 100, 200, 300, 400]), staff_row(180, [0, 100, 200, 300, 400])
     L = front.build(a + b, 500, 300)
-    line = lambda sts: ([True] * (len(sts) - 1), ["line"] * (len(sts) - 1))        # noqa: E731
-    prior, fitted, linked = front._with_layout([1, 1], L.syms, L.staves, [], line, add=False)
-    assert not prior["used"] and prior["why"] == "the layout parts staves a line joins" and linked == [True]
+    for said in ("line", "unclear"):
+        joins = lambda sts: ([True] * (len(sts) - 1), [said] * (len(sts) - 1))     # noqa: E731
+        prior, fitted, linked = front._with_layout([1, 1], L.syms, L.staves, [], joins, add=False)
+        assert not prior["used"] and prior["why"] == "the layout parts staves the page joins" and linked == [True]
     # two staves whose bar lines fall in different places are not one system, whatever the layout counts
     c = staff_row(180, [0, 150, 250, 350, 400])
     L = front.build(a + c, 500, 300)

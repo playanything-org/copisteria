@@ -1118,8 +1118,11 @@ def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list
     more were found, the weakest go -- those with less than DROP_SHARE of the page's median staff's bars (an inset
     ossia, a line of text read as a staff, a second reading of one staff), never a staff for being silent; where
     fewer, the likeliest of the staves the finder saw and did not take join (``spare``, when ``add``), each only
-    with SPARE_HOLDS sure symbols on it. The layout is evidence too, and may be wrong: it is not used where it cannot
-    be met that way, where it would part two staves a line of ink joins, or where it would join two whose bar lines
+    with SPARE_HOLDS sure symbols on it. The layout is evidence too, and may be wrong: it joins, it does not part.
+    The front end joins two staves on what the page shows -- a line through the gap, bar lines running on, a brace
+    -- and misses a join where that ink is faint; a count taken from a thumbnail sees neither a dashed connector nor
+    that the system below is an alternative printed under the one above. So a layout that would part two staves the
+    page joins is not used; nor one that cannot be met as above, nor one that would join two staves whose bar lines
     plainly do not line up. The page is then read as without it, and ``why`` says so. The notes are read as ever;
     the layout says only which staves there are and which are played together."""
     linked, said = links_of(staves)
@@ -1170,11 +1173,11 @@ def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list
         at += n
         ends.add(at)
     forced = [k not in ends for k in range(1, total)]
-    _, told = links_of(fitted) if prior["dropped"] or prior["added"] else (linked, said)
+    joined, _ = links_of(fitted) if prior["dropped"] or prior["added"] else (linked, said)
     for k in range(1, total):
-        if not forced[k - 1] and told[k - 1] == "line":
-            return unused("the layout parts staves a line joins")
-        if forced[k - 1] and told[k - 1] != "line" and _apart(syms, fitted[k - 1], fitted[k]):
+        if joined[k - 1] and not forced[k - 1]:
+            return unused("the layout parts staves the page joins")
+        if forced[k - 1] and not joined[k - 1] and _apart(syms, fitted[k - 1], fitted[k]):
             return unused("the layout joins staves whose bar lines do not line up")
     prior["used"] = True
     return prior, fitted, forced
