@@ -1,3 +1,4 @@
+# Modified by Play Anything (https://github.com/playanything-org/copisteria): see CHANGES.md.
 """The minimal front end: detector boxes -> symbols -> staves, bars and systems. No music in here.
 
 Only geometry is decided here, and only the parts the writer cannot do without:
@@ -713,6 +714,37 @@ def _staves_score(staves: list[Staff], syms: list[Sym]) -> float:
                                       st.x0 - st.sp <= b.cx <= st.x1 + st.sp for st in staves))
 
 
+DOUBLE_OVERLAP = 0.5          # two staves of the line finder sharing this much of the lower one's height are one staff
+
+
+def _without_doubles(found: list, syms: list[Sym]) -> list:
+    """The line finder's staves without those that double another. On a scan that bows or tilts, a staff line is two
+    runs of rows, one for each end of it, and the finder groups each set of five into a staff: the same printed staff
+    twice, about half a space apart. No two staves of a page overlap, so of two that share DOUBLE_OVERLAP of the
+    lower one's height one goes: the one the detector's measure boxes sit on less well (a measure box spans its
+    staff's five lines), else the one whose lines score lower. A doubled staff left in gives its system a staff the
+    page does not print, and the page's parts are planned on its fullest system."""
+    boxes = [s for s in syms if s.fam == "measure" and s.p >= MEASURE_LOW_P]
+
+    def held(st) -> float:
+        return sum(max(0.0, min(s.box[3], st.bottom) - max(s.box[1], st.top)) / max(1.0, s.box[3] - s.box[1])
+                   for s in boxes if s.box[2] > st.x0 and s.box[0] < st.x1)
+
+    def weight(st) -> tuple[float, float]:
+        return held(st), sum(line.score for line in st.lines)
+
+    out: list = []
+    for st in sorted(found, key=lambda st: st.top):
+        prev = out[-1] if out else None
+        if prev is not None and min(prev.bottom, st.bottom) - max(prev.top, st.top) > \
+                DOUBLE_OVERLAP * min(prev.bottom - prev.top, st.bottom - st.top):
+            if weight(st) > weight(prev):
+                out[-1] = st
+            continue
+        out.append(st)
+    return out
+
+
 def _ink_staves_from(page, gray, syms: list[Sym]) -> list[Staff] | None:
     """Staves from the staff lines in ``page`` (vision.page.staves: five long thin runs at one spacing), each
     holding the detected measure boxes that sit on it. A row of measure boxes no ink staff explains (a staff the
@@ -727,6 +759,7 @@ def _ink_staves_from(page, gray, syms: list[Sym]) -> list[Staff] | None:
     hs = sorted(s.box[3] - s.box[1] for s in syms if s.fam == "measure" and s.p >= 0.5)
     box_sp = hs[len(hs) // 2] / 4 if hs else None
     found = [st for st in m.staves if box_sp is None or 0.6 * box_sp <= st.spacing <= 1.6 * box_sp]
+    found = _without_doubles(found, syms)
     if not found:
         return None
     if hs and len(found) < 0.8 * len(_rows([s for s in syms if s.fam == "measure" and s.p >= MEASURE_MIN_P])):

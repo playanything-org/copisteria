@@ -383,3 +383,21 @@ def test_a_pale_opening_line_joins_two_staves_and_a_white_gap_does_not():
     pale = front.build(dets, 620, 360, image=Image.fromarray(page))
     assert [len(sy.staves) for sy in white.systems] == [1, 1]
     assert [len(sy.staves) for sy in pale.systems] == [2]
+
+
+def test_a_staff_the_line_finder_finds_twice_is_one_staff():
+    """A bowed scan gives each staff line two runs of rows, and the finder a second staff half a space under the
+    first: the one the measure boxes sit on stays, and a staff a space below another is left alone."""
+    from copisteria.vision.page.staves import Line, Staff as Found
+
+    def found(top, score=0.5, sp=10.0):
+        return Found(lines=[Line(y=top + k * sp, x0=0, x1=400, thickness=2, score=score) for k in range(5)])
+
+    syms = front.merge(staff_row(100, [0, 200, 400]) + staff_row(200, [0, 200, 400]))
+    upper, double, lower = found(100, 0.4), found(106, 0.9), found(200)
+    assert front._without_doubles([double, upper, lower], syms) == [upper, lower]
+    assert front._without_doubles([upper, lower], syms) == [upper, lower]
+    # with no measure box to tell, the one whose lines score higher
+    assert front._without_doubles([upper, double], []) == [double]
+    # staves that only touch are two staves
+    assert front._without_doubles([found(100), found(138)], []) == [found(100), found(138)]
