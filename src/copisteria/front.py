@@ -1192,7 +1192,22 @@ def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list
             if gap(k) >= between:
                 return unused("the layout joins staves as far apart as two of its systems")
     prior["used"] = True
+    prior["joined"] = [k for k in range(1, total) if forced[k - 1] and not joined[k - 1]]
     return prior, fitted, forced
+
+
+def _loses_bars(systems: list[System], shown: list[int], joined: list[int]) -> bool:
+    """Whether a system the layout formed by joining staves has fewer than two thirds of the bars its staves show by
+    themselves (``shown``: per staff, its measure boxes; ``joined``: the pairs (k - 1, k) the layout joined). The bars
+    of a system are cut where its staves agree on a bar line; staves that are not one system do not agree, and nor
+    do the staves of one on a page photographed askew. Either way the join does not fit what the page shows."""
+    for sy in systems:
+        if not any(k in sy.staves and k - 1 in sy.staves for k in joined):
+            continue
+        bars = 1 + max((max(c) for c in sy.columns if c), default=-1)
+        if 3 * bars < 2 * max(shown[k] for k in sy.staves):
+            return True
+    return False
 
 
 CAND_SKIP = ("measure", "barLine")         # structure is decided before candidates join
@@ -1230,7 +1245,13 @@ def build(dets: list[dict], width: float, height: float, image=None, cands: list
     if layout is not None:
         prior, staves, linked = _with_layout(layout, syms, staves, spare, lambda sts: _links(syms, sts, mask, gray),
                                              add=ink_path, most=most)
+    shown = [sum(not syms[i].synthetic for i in st.bars) for st in staves]
     systems = _systems(syms, staves, mask, ink=ink_path, levels=gray, linked=linked)
+    if prior is not None and prior.get("joined") and _loses_bars(systems, shown, prior["joined"]):
+        L = build(dets, width, height, image=image, cands=cands, cuts=cuts)           # the page as read without it
+        L.prior = {**prior, "used": False, "dropped": 0, "added": 0, "joined": [],
+                   "why": "the layout joins staves into a system with fewer bars than they show"}
+        return L
     _assign(syms, staves)
     if cands:
         new = []

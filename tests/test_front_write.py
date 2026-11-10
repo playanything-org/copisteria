@@ -539,3 +539,13 @@ def test_a_join_a_layout_adds_has_to_fit_the_pages_spacing_and_the_scores_size(m
     # and a system of more staves than the score has is no system of this score
     L = front.build(rows([100, 180, 400, 480]), 400, 600, layout=[2, 2], most=1)
     assert not L.prior["used"] and L.prior["why"] == "the layout counts a system of 2 staves and the score has 1"
+
+
+def test_a_join_that_loses_the_bars_its_staves_show_does_not_fit_the_page():
+    two = [front.System(staves=[0, 1], columns=[[0, 1], [0, 1]]), front.System(staves=[2], columns=[[0, 1, 2, 3, 4]])]
+    # staves showing five and four bars, joined into a system of two: the join is not the page's
+    assert front._loses_bars(two, [5, 4, 5], joined=[1])
+    # four bars of five is the usual wobble of one missed bar line; a system the layout did not form is not judged
+    four = [front.System(staves=[0, 1], columns=[[0, 1, 2, 3], [0, 1, 2, 3]])]
+    assert not front._loses_bars(four, [5, 4], joined=[1])
+    assert not front._loses_bars(two, [5, 4, 5], joined=[])
