@@ -45,7 +45,9 @@ What a caller may ask of the writer (`write.py` `write`; without these arguments
   for a caller that places a system's staves itself.
 - **`roster`** (`roster.py`): the score's instruments as the caller knows them, each as its number of staves. A page
   whose every system the roster explains is planned on the roster; any other page is planned as without it, and
-  `facts["roster"]` says why.
+  `facts["roster"]` says why. A system of fewer staves is placed among the roster's instruments by its braces and
+  opening clefs alone: where they fit it more than one way (two treble staves that could be any two of four voices),
+  the page is not explained, since a guess would give players' music to others and leave them empty.
 
 The read path:
 

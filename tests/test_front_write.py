@@ -443,6 +443,39 @@ def test_a_voice_alone_is_the_rosters_voice_and_a_page_the_roster_does_not_expla
     assert parts == [("2", [False, False])] and "brace" in why
 
 
+def test_a_system_the_roster_fits_more_than_one_way_is_not_placed_by_a_guess(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    xs = [0, 150, 300]
+    brace = lambda top: det("grpSym_brace", (0, top, 8, top + 120))              # noqa: E731
+    # bells, a chorus, two voices and a piano; the page shows two treble staves over the braced piano. They are any
+    # two of the four single staves: nothing on the page says which, so the roster does not explain it, and the page
+    # keeps its own three parts rather than giving two players' music to the first two
+    rows = staff_row(100, xs) + staff_row(180, xs) + staff_row(260, xs) + staff_row(340, xs)
+    L = front.build(rows + [brace(260)] + [det("note_quarter", (50, 115, 60, 125), staff_position=0)], 400, 500)
+    assert [len(sy.staves) for sy in L.systems] == [4]
+    parts, why = _rostered(L, _tokens(L), [1, 1, 1, 1, 2])
+    assert "more than one way" in why and [staves for staves, _ in parts] == ["1", "1", "2"]
+    # one way only: a voice over the piano is the roster's one voice, and the piano alone is its piano
+    parts, why = _rostered(L, _tokens(L), [1, 1, 2])
+    assert why is None and [staves for staves, _ in parts] == ["1", "1", "2"]
+    # the clefs tell: a soprano and a bass over the piano on the page's whole system, then the bass alone with it
+    ys = [0, 100, 200, 300]                                                      # other bars: another system
+    below = staff_row(500, ys) + staff_row(580, ys) + staff_row(660, ys)
+    whole = staff_row(100, xs) + staff_row(180, xs) + staff_row(260, xs) + staff_row(340, xs)
+    L = front.build(whole + [brace(260)] + below + [brace(580)] + [det("note_quarter", (50, 515, 60, 525), staff_position=0)], 400, 800)
+    assert [len(sy.staves) for sy in L.systems] == [4, 3]
+    low = [sy.staves[k] for sy, ks in zip(L.systems, ([1, 3], [0, 2])) for k in ks]
+    bass = lambda s: "F4" if s.staff in low else "G2"                            # noqa: E731
+    parts, why = _rostered(L, _tokens(L, clef=bass), [1, 1, 2])
+    assert why is None
+    # the lone staff's notes are the bass's, the roster's second part, and the soprano rests there
+    assert [any(sounds) for _, sounds in parts] == [False, True, False]
+    # the same page with every clef alike: the lone staff is the soprano as readily as the bass
+    parts, why = _rostered(L, _tokens(L), [1, 1, 2])
+    assert "more than one way" in why
+
+
 def test_a_line_with_a_percussion_clef_on_it_is_a_one_line_staff():
     from copisteria.vision.page.staves import Line
     staves = [front.Staff(bars=[], sp=10.0, y0=100.0, y1=140.0, x0=0.0, x1=400.0),

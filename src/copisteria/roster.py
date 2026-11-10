@@ -11,6 +11,12 @@ The roster is evidence, not authority: it is used only on a page all of whose sy
 has to be the roster or an ordered part of it, a brace has to join the two staves of one of its two-staff
 instruments, and no system may show more staves than it has. A page it does not explain (another piece, an
 ensemble that changed, a roster read wrong) is planned as before, and says why.
+
+Nor is a system placed by a guess. A system of fewer staves than the roster is some of its instruments, and which
+ones only its braces and opening clefs say: two voices over a piano are the roster's second and third voices as
+readily as its first and second, and written onto the first two they leave the players who sang with nothing and
+give their music to players who rested. Where the evidence fits a system to the roster more than one way the page is
+not explained, and is planned as before, each system on the parts the page itself shows.
 """
 from __future__ import annotations
 
@@ -18,6 +24,8 @@ import math
 from collections import Counter
 
 from .read import Reading
+
+EPS = 1e-9             # two fits of a system to the roster score the same
 
 
 def plan(rd: Reading, counts: list[int]) -> tuple[tuple[list, list[dict[int, int]]] | None, str | None]:
@@ -57,10 +65,10 @@ def plan(rd: Reading, counts: list[int]) -> tuple[tuple[list, list[dict[int, int
                 return None, "a system braces two staves, and the roster has no two-staff part"
 
             def unary(i: int, p: int) -> float:
-                v = -W.ALIGN_SHIFT * abs(p - i)
+                # what the staff says of its place: its opening clef against the one the page's whole systems show there
                 if clefs[n][i] and t_clef[p]:
-                    v += W.ALIGN_CLEF if clefs[n][i] == t_clef[p] else -W.ALIGN_CLEF
-                return v
+                    return W.ALIGN_CLEF if clefs[n][i] == t_clef[p] else -W.ALIGN_CLEF
+                return 0.0
 
             def link(i: int, q: int, p: int) -> float:
                 """Staff i - 1 at place q, staff i at place p."""
@@ -75,18 +83,28 @@ def plan(rd: Reading, counts: list[int]) -> tuple[tuple[list, list[dict[int, int
                     v -= W.ALIGN_BRACE
                 return v
 
+            # the best fit by evidence alone, and in how many ways it is reached: with nothing to tell two fits
+            # apart there is no fit (write._align_systems takes the top one; a roster's page may not)
             best = [[-math.inf] * K for _ in range(size)]
+            ways = [[0] * K for _ in range(size)]
             back = [[-1] * K for _ in range(size)]
             for p in range(K - size + 1):
-                best[0][p] = unary(0, p) - (W.ALIGN_BRACE if p - 1 in pair else 0.0)
+                best[0][p], ways[0][p] = unary(0, p) - (W.ALIGN_BRACE if p - 1 in pair else 0.0), 1
             for i in range(1, size):
                 for p in range(i, K - size + i + 1):
                     for q in range(i - 1, p):
                         v = best[i - 1][q] + link(i, q, p)
-                        if v > best[i][p]:
-                            best[i][p], back[i][p] = v, q
+                        if v > best[i][p] + EPS:
+                            best[i][p], ways[i][p], back[i][p] = v, ways[i - 1][q], q
+                        elif abs(v - best[i][p]) <= EPS:
+                            ways[i][p] += ways[i - 1][q]
                     best[i][p] += unary(i, p)
-            p = max(range(size - 1, K), key=lambda p: best[size - 1][p] - (W.ALIGN_BRACE if p in pair else 0.0))
+            ends = {p: best[size - 1][p] - (W.ALIGN_BRACE if p in pair else 0.0) for p in range(size - 1, K)}
+            top = max(ends.values())
+            fits = [p for p, v in ends.items() if abs(v - top) <= EPS]
+            if sum(ways[size - 1][p] for p in fits) != 1:
+                return None, f"a system of {size} staves fits the roster's {K} more than one way"
+            p = fits[0]
             places = [p]
             for i in range(size - 1, 0, -1):
                 p = back[i][p]
