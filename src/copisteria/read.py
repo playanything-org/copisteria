@@ -1,4 +1,4 @@
-# Modified by Play Anything (https://github.com/playanything-org/copisteria): see CHANGES.md.
+# Modified by Play Anything (https://github.com/playanything-org/copisteria): see README.md.
 """Read a page: detections -> front end -> the evidence model -> every symbol's final reading.
 
 Each system is read in a window with its neighbours (the previous and the next system), and only its own tokens

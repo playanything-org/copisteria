@@ -1,3 +1,4 @@
+# Modified by Play Anything (https://github.com/playanything-org/copisteria): see README.md.
 from fractions import Fraction
 
 import xml.etree.ElementTree as ET

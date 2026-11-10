@@ -1,4 +1,4 @@
-# Added by Play Anything (https://github.com/playanything-org/copisteria): see CHANGES.md.
+# Added by Play Anything (https://github.com/playanything-org/copisteria): see README.md.
 """Parts planned on a roster the caller knows, instead of on the page's fullest system.
 
 The writer plans a page's parts on its fullest system and reads every other system against it (write._plan_parts,

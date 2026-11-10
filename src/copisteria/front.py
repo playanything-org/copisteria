@@ -1,4 +1,4 @@
-# Modified by Play Anything (https://github.com/playanything-org/copisteria): see CHANGES.md.
+# Modified by Play Anything (https://github.com/playanything-org/copisteria): see README.md.
 """The minimal front end: detector boxes -> symbols -> staves, bars and systems. No music in here.
 
 Only geometry is decided here, and only the parts the writer cannot do without:

@@ -1,4 +1,4 @@
-# Modified by Play Anything (https://github.com/playanything-org/copisteria): see CHANGES.md.
+# Modified by Play Anything (https://github.com/playanything-org/copisteria): see README.md.
 """A page's reading -> MusicXML. Transcription only: every decision was the model's.
 
 The writer lays the model's readings out the way MusicXML wants them and adds nothing to the page: a bar's notes

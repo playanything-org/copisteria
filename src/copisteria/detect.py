@@ -1,4 +1,4 @@
-# Modified by Play Anything (https://github.com/playanything-org/copisteria): see CHANGES.md.
+# Modified by Play Anything (https://github.com/playanything-org/copisteria): see README.md.
 """The v7 detector, loaded once, run over many pages (the training tokenizer and the reader both use it).
 
 Output is one record per detection: cls, conf, xyxy, bbox, and for notes and rests their attributes (attrs,

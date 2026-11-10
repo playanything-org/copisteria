@@ -1,4 +1,4 @@
-# Modified by Play Anything (https://github.com/playanything-org/copisteria): see CHANGES.md.
+# Modified by Play Anything (https://github.com/playanything-org/copisteria): see README.md.
 """Read pages end to end: page image -> v7 detections (cached) -> front end -> evidence model -> MusicXML + viewer.
 
   python -m copisteria.pipeline page.png [more pages ...] --out out
