@@ -25,6 +25,14 @@ Reading (what a page's MusicXML holds):
   A page whose paper tone varies by more than `SHADED` is masked flat; any other page keeps the mask it had.
 - **A line with a percussion clef on it is a one-line staff** (`front.py` `_one_line_staves`). The finder knows
   five-line staves only, so a triangle's or a tambourine's staff was not there and its system read a staff short.
+- **No voice holds two events at once** (`write.py` `_unlapped`). On a part of several staves the model's onset
+  places each event, and where it puts one before the last has ended (a hand's two voices read as one, an onset
+  read wrong) the voice was written with a backup inside it. A reader of the score that keeps one event at a time
+  in a voice drops what overlaps: on 326 production pages about 1,700 of 83,754 noteheads were written into a voice
+  that was still sounding. What overlaps now goes to a voice of its own while the staff has one free; every event
+  is still written at the time the model gave it. Ties are paired along the voice as it was read; the notes of a
+  tie, and a run of notes with its beam and its tuplet, stay in one voice where they can; and the staff's
+  directions are written with the voice whose next event they stand at.
 
 What a caller may tell the front end (`front.py` `build`, `read.py` `read`; without it nothing changes):
 

@@ -476,6 +476,173 @@ def test_a_system_the_roster_fits_more_than_one_way_is_not_placed_by_a_guess(mon
     assert "more than one way" in why
 
 
+def test_a_voice_never_holds_two_events_at_once():
+    """A keyboard hand whose second chord the model places before the first has ended was written with a backup
+    inside the voice; a reader that keeps one event at a time in a voice then drops what overlaps. The overlapping
+    events go to a voice of their own, each lane in time order with only forward gaps, and nothing is lost."""
+    from fractions import Fraction as F
+    E = write.Event
+
+    def note(x, onset, typ="half", **more):
+        return E(x=x, kind="note", typ=typ, onset=onset, onset_p=1.0, **more)
+
+    def times(evs):
+        out, pos = [], F(0)
+        for e in evs:
+            if e.kind == "gap":
+                assert e.dur > 0
+                pos += e.dur
+            elif e.chord:
+                out.append((out[-1][0], e.step))
+            else:
+                out.append((pos, e.step))
+                pos += e.dur
+        return out
+
+    # a half-note chord at 0, a 32nd the model hears at 7/8, a second half-note chord it hears at 1, and a rest
+    def events():
+        return [note(10, 0.0, step="F"), note(10.5, 0.0, step="A", chord=True), note(40, 0.875, typ="32nd", step="B"),
+                note(60, 1.0, step="G"), note(60.5, 1.0, step="C", chord=True),
+                E(x=90, kind="rest", typ="quarter", onset=3.0, onset_p=1.0)]
+    vs = write._voices(events(), 10.0, single_staff_part=False, bar_len=F(4))
+    assert sorted(vs) == [1, 2]
+    assert times(vs[1]) == [(F(0), "F"), (F(0), "A")]
+    # what follows an event goes where it went while that voice is free: the rest (step is its default) after the chord
+    assert times(vs[2]) == [(F(7, 8), "B"), (F(1), "G"), (F(1), "C"), (F(3), "C")]
+    assert all(e.voice == 2 for e in vs[2]) and sum(e.kind == "note" for evs in vs.values() for e in evs) == 5
+    # a voice with nothing overlapping is the very list it was
+    plain = [note(10, 0.0, typ="quarter"), note(30, 1.0, typ="quarter")]
+    read = {}
+    vs = write._voices(plain, 10.0, single_staff_part=False, bar_len=F(4), read=read)
+    assert sorted(vs) == [1] and [e.kind for e in vs[1]] == ["note", "note"] and read == {1: vs[1]}
+    # with every voice of the staff taken, the voice is left as it was read rather than losing a lane
+    full = [E(x=5 + n, kind="rest", typ="whole", voice=n, onset=0.0, onset_p=1.0) for n in (2, 3, 4)]
+    vs = write._voices(events() + full, 10.0, single_staff_part=False, bar_len=F(4))
+    assert sorted(vs) == [1, 2, 3, 4] and any(e.kind == "gap" and e.dur < 0 for e in vs[1])
+    # a rest the model places over a sounding note says nothing, and opens no voice; the grace note before it is kept
+    over = [note(10, 0.0, typ="whole", step="D"), E(x=35, kind="note", typ="eighth", step="E", grace="acciaccatura", onset=1.0, onset_p=1.0),
+            E(x=40, kind="rest", typ="quarter", onset=1.0, onset_p=1.0)]
+    vs = write._voices(over, 10.0, single_staff_part=False, bar_len=F(4))
+    assert sorted(vs) == [1] and [(e.kind, e.step) for e in vs[1]] == [("note", "D"), ("note", "E")]
+    # the voice as the model read it is handed back for ties: every event in page order, whatever voice it is written in
+    read = {}
+    vs = write._voices(events(), 10.0, single_staff_part=False, bar_len=F(4), read=read)
+    assert sorted(read) == [1] and [e.step for e in read[1] if e.kind == "note"] == ["F", "A", "B", "G", "C"]
+    # a voice read as the staff's second keeps its number, and what overlaps goes above it, not to the first
+    second = [E(**{**e.__dict__, "voice": 2}) for e in events()]
+    assert sorted(write._voices(second, 10.0, single_staff_part=False, bar_len=F(4))) == [2, 3]
+    # the lane that ends in a tied note keeps the voice's number (its tie runs into the next bar's voice), and a note
+    # goes to the lane that ends in a tied note of its pitch
+    tied = [note(10, 0.0, typ="whole", step="E"), note(40, 2.0, typ="quarter", step="B", tie=True), note(60, 3.0, typ="quarter", step="B", tie=True)]
+    vs = write._voices(tied, 10.0, single_staff_part=False, bar_len=F(4))
+    assert [e.step for e in vs[1] if e.kind == "note"] == ["B", "B"] and [e.step for e in vs[2] if e.kind == "note"] == ["E"]
+    # a run of notes stays in the lane it began in, though the first lane falls free under it: a triplet over a half
+    # note keeps its three notes, its bracket and its beam in one voice
+    run = [note(10, 0.0, typ="half", step="C")] + [note(20 + 10 * k, onset, typ="eighth", step="G", tup="3/2")
+                                                    for k, onset in enumerate((1.0, 1 + 1 / 3, 1 + 2 / 3, 2.0, 2 + 1 / 3, 2 + 2 / 3))]
+    vs = write._voices(run, 10.0, single_staff_part=False, bar_len=F(4))
+    assert [e.step for e in vs[1] if e.kind == "note"] == ["C"] and [e.step for e in vs[2] if e.kind == "note"] == ["G"] * 6
+    assert [e.tuplet_mark for e in vs[2] if e.kind == "note"] == ["start", "", "stop", "start", "", "stop"]
+
+
+def test_a_tie_follows_its_note_through_a_voice_of_its_own(monkeypatch):
+    """Ties are paired along the voice as the model read it. Paired along the voices as written, a tied note moved to
+    a voice of its own for one bar lost its tie, or was tied to whatever stood in that voice number bars later and
+    gave it its accidental."""
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    flat = {"alter": {"v": -1}}
+    # bar 1: a whole E4 and, at beat 3, a half B flat tied over the bar line; bar 2: the B flat, then D5s;
+    # bar 3: a whole E4 under a B natural half and a D5 half
+    notes = [(40, "note_whole", -4, 0.0, 0.0, {}), (120, "note_half", 0, 2.0, 1.0, flat),
+             (240, "note_quarter", 0, 0.0, 0.0, flat), (280, "note_quarter", 2, 1.0, 0.0, {}), (320, "note_quarter", 2, 2.0, 0.0, {}),
+             (360, "note_quarter", 2, 3.0, 0.0, {}),
+             (440, "note_whole", -4, 0.0, 0.0, {}), (452, "note_half", 0, 0.0, 0.0, {}), (520, "note_half", 2, 2.0, 0.0, {})]
+    dets = staff_row(100, [0, 200, 400, 600]) + [det("meterSig_4_4", (10, 100, 20, 140))]
+    dets += [det(cls, (x - 5, 115 - pos * 5, x + 5, 125 - pos * 5), staff_position=pos) for x, cls, pos, *_ in notes]
+    L = front.build(dets, 700, 300)
+    by_x, tok = {x: (cls, pos, onset, tie, more) for x, cls, pos, onset, tie, more in notes}, {}
+    for sym in L.syms:
+        real = {"real": {"p": 1.0, "det": 1.0, "ev": 0}}
+        if sym.fam == "measure":
+            tok[sym.i] = {**real, "cls": {"v": "measure"}, "key": {"v": 0}, "time": {"v": "4/4"}, "clef": {"v": "G2"}}
+        elif sym.fam == "meterSig":
+            tok[sym.i] = {**real, "cls": {"v": "meterSig_4_4"}}
+        else:
+            cls, pos, onset, tie, more = by_x[round(sym.cx)]
+            tok[sym.i] = {**real, "cls": {"v": cls}, "dots": {"v": 0}, "pos": {"v": pos}, "voice": {"v": 1}, "tup": {"v": "none"},
+                          "alter": {"v": 0}, "grace": {"v": "none"}, "chord": 0.0, "tie": tie, "onset": onset, "onset_p": 1.0, **more}
+    root = ET.fromstring(write.write(_reading(L, tok)).split("\n", 2)[2])
+    bars = [[(n.findtext("pitch/step"), n.findtext("pitch/alter"), n.findtext("voice"), [t.get("type") for t in n.findall("tie")])
+             for n in m.findall("note") if n.find("rest") is None] for m in root.iter("measure")]
+    # the tied B flat keeps the voice and its tie; the E under it has a voice of its own
+    assert bars[0] == [("B", "-1", "1", ["start"]), ("E", None, "2", [])]
+    assert bars[1][0] == ("B", "-1", "1", ["stop"])
+    # bar 3's B is natural and untied, whatever voice it is written in
+    assert [(step, alter, ties) for step, alter, _, ties in bars[2]] == [("E", None, []), ("B", None, []), ("D", None, [])]
+    # no voice holds two notes at once
+    for m in root.iter("measure"):
+        at, spans = 0, {}
+        for n in m:
+            if n.tag in ("backup", "forward"):
+                at += int(n.findtext("duration")) * (-1 if n.tag == "backup" else 1)
+            elif n.tag == "note" and n.find("chord") is None:
+                d, v = int(n.findtext("duration")), n.findtext("voice")
+                assert n.find("rest") is not None or all(not (a < at + d and at < b) for a, b in spans.get(v, []))
+                spans.setdefault(v, []).append((at, at + d))
+                at += d
+
+
+def test_a_divided_bars_directions_are_written_at_their_own_time(monkeypatch):
+    """The staff's directions and clef changes were written with its first voice, before the event they stand at. In
+    a bar whose first voice is written in two, they go with the voice whose next event comes first on the page: a
+    dynamic and a clef at the last quarter are written there, not after a whole note held under it, nor before the
+    gap that leads to it."""
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+
+    def bar(notes, extra, voice=1):
+        dets = staff_row(100, [0, 200]) + [det("meterSig_4_4", (10, 100, 20, 140))]
+        dets += [det(cls, (x - 5, 115 - pos * 5, x + 5, 125 - pos * 5), staff_position=pos) for x, cls, pos, _ in notes]
+        dets += [det(cls, box) for cls, box in extra]
+        L = front.build(dets, 300, 300)
+        by_x, tok = {x: (cls, pos, onset) for x, cls, pos, onset in notes}, {}
+        for sym in L.syms:
+            real = {"real": {"p": 1.0, "det": 1.0, "ev": 0}}
+            if sym.fam == "measure":
+                tok[sym.i] = {**real, "cls": {"v": "measure"}, "key": {"v": 0}, "time": {"v": "4/4"}, "clef": {"v": "G2"}}
+            elif round(sym.cx) in by_x and sym.fam == "note":
+                cls, pos, onset = by_x[round(sym.cx)]
+                tok[sym.i] = {**real, "cls": {"v": cls}, "dots": {"v": 0}, "pos": {"v": pos}, "voice": {"v": voice}, "tup": {"v": "none"},
+                              "alter": {"v": 0}, "grace": {"v": "none"}, "chord": 0.0, "tie": 0.0, "onset": onset, "onset_p": 1.0}
+            else:
+                tok[sym.i] = {**real, "cls": {"v": sym.cls}}
+        root = ET.fromstring(write.write(_reading(L, tok)).split("\n", 2)[2])
+        out = []
+        for el in root.find(".//measure"):
+            if el.tag == "note":
+                out.append("rest" if el.find("rest") is not None else el.findtext("pitch/step") + el.findtext("voice"))
+            elif el.tag in ("backup", "forward"):
+                out.append(el.tag + el.findtext("duration"))
+            elif el.tag == "direction":
+                out.append("dynamic")
+            elif el.tag == "attributes" and el.find("clef") is not None and el.find("time") is None:
+                out.append("clef")
+        return out
+
+    whole, last = (40, "note_whole", -4, 0.0), (170, "note_quarter", 2, 3.0)
+    quarters = [(44, "note_quarter", 0, 0.0), (80, "note_quarter", 0, 1.0), (120, "note_quarter", 0, 2.0)]
+    marks = [("dynam_f", (115, 150, 125, 160)), ("clef_F4", (145, 100, 155, 140))]
+    # a whole note under four quarters, a dynamic at the third and a clef before the fourth
+    assert bar([whole, *quarters, last], marks) == ["E1", "backup4", "B2", "B2", "dynamic", "B2", "clef", "F2"]
+    # the lane of a lone quarter at beat 4 starts with a gap: its clef and dynamic come after the gap, at the quarter
+    assert bar([whole, last], [("dynam_f", (165, 150, 175, 160)), marks[1]]) == ["E1", "backup4", "forward3", "clef", "dynamic", "F2"]
+    # every note read as the staff's fourth voice: the lane takes a lower number, and the directions stay with the
+    # voice as read
+    assert bar([(44, "note_whole", -4, 0.0), (40, "note_quarter", 0, 0.0), *quarters[1:], last], marks, voice=4) == \
+        ["E1", "backup4", "B4", "B4", "dynamic", "B4", "clef", "F4"]
+
+
 def test_a_line_with_a_percussion_clef_on_it_is_a_one_line_staff():
     from copisteria.vision.page.staves import Line
     staves = [front.Staff(bars=[], sp=10.0, y0=100.0, y1=140.0, x0=0.0, x1=400.0),

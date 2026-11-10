@@ -472,9 +472,13 @@ def _decode_alters(rd: Reading, syms: list, events: list[Event], sp: float) -> N
 
 
 def _voices(events: list[Event], sp: float, single_staff_part: bool = True,
-            bar_len: Fraction | None = None, score: list | None = None) -> dict[int, list[Event]]:
+            bar_len: Fraction | None = None, score: list | None = None,
+            read: dict | None = None, lanes: dict | None = None) -> dict[int, list[Event]]:
     """Events per voice, in time order. A chord member (chord head > 0.5) joins the root nearest it in x within
-    1.5 staff spaces in its voice (a root is a note the model did not call a member); without one it stands alone."""
+    1.5 staff spaces in its voice (a root is a note the model did not call a member); without one it stands alone.
+    ``read``, where given, receives each voice as the model read it, before any of it moved to a voice of its own
+    (_unlapped): what follows a note in its voice, for a tie, is what followed it on the page. ``lanes`` receives,
+    for each voice that was so divided, the voices its events are written in, its own first."""
     vs: dict[int, list[Event]] = {}
     for e in sorted(events, key=lambda e: e.x):
         vs.setdefault(e.voice, []).append(e)
@@ -514,37 +518,113 @@ def _voices(events: list[Event], sp: float, single_staff_part: bool = True,
                 m.dur, m.tup = e.dur, e.tup
                 out.append(m)
         vs[v] = out
-        evs = out
-        # tuplet brackets: runs of one ratio, closed once the run spans actual x the first note's type (or where
-        # the run is broken: another ratio, a plain note, the bar's end)
-        def close(run):
-            if len(run) > 1:
-                run[-1].tuplet_mark = "stop"
-            elif run:
-                run[0].tuplet_mark = ""
-
-        run, nominal, target = [], Fraction(0), None
-        for e in evs:
-            if e.chord or e.grace != "none":
-                continue
-            if e.tup in ("none", "other"):
-                close(run)
-                run, nominal, target = [], Fraction(0), None
-                continue
-            a, n = (int(x) for x in e.tup.split("/"))
-            if not run or run[0].tup != e.tup:
-                close(run)
-                run, nominal = [e], Fraction(0)
-                target = a * TYPE_QUARTERS.get(e.typ, Fraction(1))
-                e.tuplet_mark = "start"
-            else:
-                run.append(e)
-            nominal += TYPE_QUARTERS.get(e.typ, Fraction(1)) * (2 - Fraction(1, 2 ** e.dots))
-            if nominal >= target:
-                close(run)
-                run, nominal, target = [], Fraction(0), None
-        close(run)
+    if read is not None:
+        read.update({v: list(evs) for v, evs in vs.items()})
+    # no voice holds two events at once: what overlaps goes to a voice of its own, while the staff has one free
+    # (the next above it first, so that the voice stays the staff's first where it was)
+    for v in sorted(vs):
+        split = _unlapped(vs[v])
+        if split[0] is vs[v]:
+            continue                                 # nothing overlapped
+        free = sorted((n for n in range(1, VOICES + 1) if n not in vs), key=lambda n: (n < v, n))
+        if len(free) >= len(split) - 1:
+            vs[v] = split[0]
+            for n, lane in zip(free, split[1:]):
+                for e in lane:
+                    e.voice = n
+                vs[n] = lane
+            if lanes is not None:
+                lanes[v] = [v, *free[:len(split) - 1]]
+    for evs in vs.values():
+        _tuplet_brackets(evs)
     return vs
+
+
+VOICES = 4                      # voices a staff is written with (a part's voice numbers run four to a staff)
+
+
+def _unlapped(evs: list[Event]) -> list[list[Event]]:
+    """A voice's events as lanes in none of which two events sound at once. Where the model's onset places an event
+    before the one before it has ended (a keyboard staff's two voices read as one; an onset read wrong), a voice
+    written with a backup inside it holds both at once, and a reader of the score that keeps one event at a time in a
+    voice drops the other. Each event goes to a lane free at its start: the one that ends in a tied note of its
+    pitch if there is one (a tie is kept inside one voice where it can be), else the one the event before it went
+    to (a run of notes stays together, with its beam and its tuplet), else the first. A chord's members and the
+    grace notes before a note go with it; a rest that does not fit the voice says nothing and is left out, and
+    grace notes before it go with the next event. The lane that ends in a tied note comes first, and keeps the
+    voice's number: its tie runs on into the next bar's voice. A voice without such an event comes back as it is,
+    one lane, untouched."""
+    if not any(e.kind == "gap" and e.dur < 0 for e in evs):
+        return [evs]
+    groups, pos, graces = [], Fraction(0), []
+    for e in evs:
+        if e.kind == "gap":
+            pos += e.dur
+        elif e.kind == "note" and e.chord and groups and not graces:
+            groups[-1][2].append(e)
+        elif e.grace != "none":
+            graces.append(e)
+        else:
+            groups.append((pos, pos + e.dur, graces + [e]))
+            graces = []
+            pos += e.dur
+
+    def pitches(members, tied=False):
+        return {(m.step, m.octave) for m in members if m.kind == "note" and m.grace == "none" and (m.tie or not tied)}
+
+    lanes, held, last = [], [], None            # a lane: [its events, where it has got to, the event it ends with]
+    for start, end, members in groups:
+        free = [ln for ln in lanes if ln[1] <= start]
+        lane = next((ln for ln in free if pitches(ln[2], tied=True) & pitches(members)),
+                    last if any(ln is last for ln in free) else free[0] if free else None)
+        if lane is None:
+            if members[-1].kind != "note" and lanes:
+                held += members[:-1]              # a rest over sounding notes; the grace notes before it wait
+                continue
+            lane = [[], Fraction(0), []]
+            lanes.append(lane)
+        if start > lane[1]:
+            lane[0].append(Event(x=members[0].x - 0.01, kind="gap", voice=members[0].voice, dur=start - lane[1]))
+        lane[0].extend(held + members)
+        held = []
+        lane[1], lane[2], last = end, members, lane
+    if not lanes:
+        return [evs]
+    last[0].extend(held + graces)                 # grace notes after the last event stay after it
+    keep = next((ln for ln in lanes if pitches(ln[2], tied=True)), lanes[0])
+    return [keep[0]] + [ln[0] for ln in lanes if ln is not keep]
+
+
+def _tuplet_brackets(evs: list[Event]) -> None:
+    """Tuplet brackets on a voice: runs of one ratio, closed once the run spans actual x the first note's type (or
+    where the run is broken: another ratio, a plain note, the bar's end)."""
+    def close(run):
+        if len(run) > 1:
+            run[-1].tuplet_mark = "stop"
+        elif run:
+            run[0].tuplet_mark = ""
+
+    run, nominal, target = [], Fraction(0), None
+    for e in evs:
+        if e.chord or e.grace != "none":
+            continue
+        if e.tup in ("none", "other"):
+            close(run)
+            run, nominal, target = [], Fraction(0), None
+            continue
+        a, n = (int(x) for x in e.tup.split("/"))
+        if not run or run[0].tup != e.tup:
+            close(run)
+            run, nominal = [e], Fraction(0)
+            target = a * TYPE_QUARTERS.get(e.typ, Fraction(1))
+            e.tuplet_mark = "start"
+        else:
+            run.append(e)
+        nominal += TYPE_QUARTERS.get(e.typ, Fraction(1)) * (2 - Fraction(1, 2 ** e.dots))
+        if nominal >= target:
+            close(run)
+            run, nominal, target = [], Fraction(0), None
+    close(run)
 
 
 TIE_RISE = 2.0                  # how far a tie's curve may lie above / below its notehead (staff spaces)
@@ -1354,11 +1434,12 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                         ev = [Event(**{**e.__dict__, "tie": False, "tie_stop": False, "marks": [], "beams": [],
                                        "slurs": [], "pre": [], "post": [], "copied": True})
                               for e in prev_events[k_i]]
+                    read, lanes = {}, {}
                     vs = _voices(ev, L.staves[staff].sp, single_staff_part=len(pl.staves) == 1,
-                                 bar_len=_time_len(state[k_i]["time"]), score=fit)
+                                 bar_len=_time_len(state[k_i]["time"]), score=fit, read=read, lanes=lanes)
                     prev_events[k_i] = ev or prev_events[k_i]
-                    m["staves"].append({"staff": staff, "bar": j, "voices": vs, "dirs": dirs, "marks": marks,
-                                        "state": dict(state[k_i])})
+                    m["staves"].append({"staff": staff, "bar": j, "voices": vs, "read": read, "lanes": lanes,
+                                        "dirs": dirs, "marks": marks, "state": dict(state[k_i])})
                     if marks["end_clef"]:                      # a clef inside the bar holds for the bars after it
                         state[k_i]["clef"] = marks["end_clef"]
                     for evs in vs.values():
@@ -1370,7 +1451,8 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
     built, all_durs, _ = build(_page_meter(rd, build))
 
     # ties: a tied note's partner is the next note of its voice with the same step and octave (this bar or next);
-    # the page then has to agree (_drawn_ties)
+    # the page then has to agree (_drawn_ties). The voice is the one the model read ("read"): an event written in a
+    # voice of its own for one bar (_unlapped) is still followed by what followed it on the page
     pairs: list[tuple[Event, Event | None, bool]] = []
     for measures in built:
         for k_i in range(max((len(m["staves"]) for m in measures), default=0)):
@@ -1379,7 +1461,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                 st = m["staves"][k_i] if k_i < len(m["staves"]) else None
                 if st is None:
                     continue
-                for v, evs in st["voices"].items():
+                for v, evs in st.get("read", st["voices"]).items():
                     streams.setdefault(v, []).extend(evs)
             for v, evs in streams.items():
                 group, groups = -1, []                 # the chord (onset) each event belongs to, in voice order
@@ -1524,12 +1606,28 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                         _sub(fw, "staff", staff_no)
                     pos_q = bar_end
                     continue
+                # the staff's directions are written with its first voice, before the event they stand at. Where
+                # that voice's events are written in several (_unlapped), each goes with the one whose next event
+                # comes first on the page, so that it is written at its own time and not after a note held under it
+                # (the first voice is the first the model read: a lane may take a lower number; a lane's gaps are
+                # no events to stand at, or a direction at its first note would be written before the gap, at the
+                # bar's start)
+                lead = min(st["read"]) if st.get("read") else min(vs)
+                family = st.get("lanes", {}).get(lead, [lead])
+                reach = 0.5 * L.staves[st["staff"]].sp
+                owned: dict[int, list] = {w: [] for w in family}
+                for d in sorted(st["dirs"]):
+                    nxt = {w: min((e.x for e in vs[w] if not (e.kind == "note" and e.chord) and d[0] <= e.x + reach
+                                   and not (e.kind == "gap" and len(family) > 1)), default=None) for w in family}
+                    ahead = [w for w in family if nxt[w] is not None]
+                    owned[min(ahead, key=lambda w: nxt[w]) if ahead else
+                          max(family, key=lambda w: max((e.x for e in vs[w]), default=-1.0))].append(d)
                 for v_i, (v, evs) in enumerate(sorted(vs.items())):
                     if pos_q:
                         _sub(_sub(meas, "backup"), "duration", units(pos_q))
                         pos_q = Fraction(0)
                     voice_no = v + 4 * (staff_no - 1)
-                    dirs = sorted(st["dirs"]) if v_i == 0 else []
+                    dirs = owned.get(v, [])
                     # a chord member's directions go with its chord's root: written between the root and a
                     # <chord/> note they would break the chord (the member read as the next note, time shifted)
                     # (pre-directions before the root, post-directions after the chord's last note)
@@ -1553,6 +1651,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                             break
                     for e in evs:
                         while dirs and not (e.kind == "note" and e.chord) and \
+                                not (e.kind == "gap" and len(family) > 1) and \
                                 dirs[0][0] <= e.x + 0.5 * L.staves[st["staff"]].sp:
                             _direction(meas, dirs.pop(0), staff_no if len(pl.staves) > 1 else None)
                         dur = bar_end if e.kind == "mrest" else e.dur
