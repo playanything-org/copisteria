@@ -456,3 +456,51 @@ def test_a_line_with_a_percussion_clef_on_it_is_a_one_line_staff():
     assert front._one_line_staves([line(220, x1=100)], staves, front.merge([clef(221)])) == []
     assert front._one_line_staves([line(220)], staves, front.merge([det("clef_G2", (20, 210, 30, 230))])) == []
     assert front._one_line_staves([line(160)], staves, front.merge([clef(160)])) == []
+
+
+def test_a_layout_the_caller_knows_groups_the_staves_into_its_systems(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    voice, right, left = staff_row(100, [0, 150, 300]), staff_row(180, [0, 100, 200, 300]), staff_row(260, [0, 100, 200, 300])
+    # a voice whose bar lines do not line up with the piano's under it: two systems to the front end, one to the page
+    L = front.build(voice + right + left, 400, 400)
+    assert [len(sy.staves) for sy in L.systems] == [1, 2] and L.prior is None
+    L = front.build(voice + right + left, 400, 400, layout=[3])
+    assert [len(sy.staves) for sy in L.systems] == [3]
+    assert L.prior["used"] and L.prior["own"] == [1, 2] and L.prior["target"] == [3]
+    assert [L.staves[k].system for k in range(3)] == [0, 0, 0] and [L.staves[k].pos for k in range(3)] == [0, 1, 2]
+    # and the other way: two staves whose bar lines line up are one system to the front end, two to the page
+    L = front.build(right + left, 400, 400, layout=[1, 1])
+    assert [len(sy.staves) for sy in L.systems] == [1, 1] and L.prior["own"] == [2]
+    # a layout that says what the front end found changes nothing
+    assert [len(sy.staves) for sy in front.build(right + left, 400, 400, layout=[2]).systems] == [2]
+
+
+def test_a_layout_drops_only_a_staff_that_holds_little_and_is_not_used_where_it_cannot_be_met(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    right, left = staff_row(180, [0, 100, 200, 300]), staff_row(260, [0, 100, 200, 300])
+    notes = [det("note_quarter", (50 + 100 * k, y + 15, 60 + 100 * k, y + 25), staff_position=0) for k in range(3) for y in (180, 260)]
+    inset = staff_row(60, [200, 300])                               # an ossia over one bar
+    L = front.build(inset + right + left + notes, 400, 400, layout=[2])
+    assert [len(sy.staves) for sy in L.systems] == [2] and L.prior["dropped"] == 1 and L.staves[0].y0 == 180
+    # a third staff that holds as much as the others is no inset: the layout is not used, and says why
+    full = staff_row(60, [0, 100, 200, 300]) + [det("note_quarter", (50 + 100 * k, 75, 60 + 100 * k, 85), staff_position=0) for k in range(3)]
+    L = front.build(full + right + left + notes, 400, 400, layout=[2])
+    assert len(L.staves) == 3 and not L.prior["used"] and L.prior["why"] == "3 staves found and 2 counted"
+    assert [len(sy.staves) for sy in L.systems] == L.prior["own"]
+    # a layout that counts nothing is not one
+    assert front.build(right + left, 400, 400, layout=[]).prior["used"] is False
+
+
+def test_a_layout_that_counts_more_staves_takes_the_likeliest_the_finder_left():
+    staves = [front.Staff(bars=[], sp=10.0, y0=100.0, y1=140.0, x0=0.0, x1=400.0),
+              front.Staff(bars=[], sp=10.0, y0=300.0, y1=340.0, x0=0.0, x1=400.0)]
+    spare = [front.Staff(bars=[], sp=10.0, y0=200.0, y1=240.0, x0=0.0, x1=400.0),
+             front.Staff(bars=[], sp=10.0, y0=420.0, y1=460.0, x0=0.0, x1=400.0)]
+    prior, fitted, linked = front._with_layout([3], [], staves, spare, [False], ["white"], add=True)
+    assert prior["used"] and prior["added"] == 1 and [st.y0 for st in fitted] == [100.0, 200.0, 300.0] and linked == [True, True]
+    # none to take (or a page read from its measure boxes): as found
+    prior, fitted, linked = front._with_layout([3], [], staves, [], [False], ["white"], add=True)
+    assert not prior["used"] and fitted == staves and linked == [False]
+    assert not front._with_layout([3], [], staves, spare, [False], ["white"], add=False)[0]["used"]

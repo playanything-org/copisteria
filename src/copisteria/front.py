@@ -120,6 +120,7 @@ class Layout:
     width: float
     height: float
     ink: bool = False                # staves and bars from the page's ink (else from the measure boxes)
+    prior: dict | None = None        # what a caller's layout did to the reading (_with_layout), if one was given
 
     def bar_box(self, staff: int, bar: int) -> Box:
         return self.syms[self.staves[staff].bars[bar]].box
@@ -525,22 +526,27 @@ def _opening_line(mask, a: Staff, b: Staff, page_left: float) -> float:
     return max((_ink_run(mask, x, a.y1 + 1, b.y0 - 1) for x in range(hi + 1, hi2 + 1, 2)), default=0.0)
 
 
-def _systems(syms: list[Sym], staves: list[Staff], gray=None, ink: bool = False, levels=None) -> list[System]:
-    """``gray``: the page's ink mask; ``levels``: its grey levels (for a line too pale for the mask)."""
+def _links(syms: list[Sym], staves: list[Staff], gray=None, levels=None) -> tuple[list[bool], list[str]]:
+    """Per pair of neighbouring staves (k - 1, k): whether one system holds both, and what said so -- "line" (ink
+    through the gap between them), "white" (none) or "unclear" (the links model, a brace, bar lines that line up).
+    ``gray``: the page's ink mask; ``levels``: its grey levels (for a line too pale for the mask)."""
     from . import links
+    n = len(staves)
+    if n < 2:
+        return [], []
     w = links.load()
-    if w is not None and len(staves) > 1:
-        gaps = sorted((staves[k + 1].y0 - staves[k].y1) / staves[k].sp for k in range(len(staves) - 1))
+    if w is not None:
+        gaps = sorted((staves[k + 1].y0 - staves[k].y1) / staves[k].sp for k in range(n - 1))
         gm = gaps[len(gaps) // 2]
-    if w is not None and len(staves) > 1:
-        ps = [links.prob(w, links.pair_features(syms, staves[k - 1], staves[k], gm, len(staves),
+        ps = [links.prob(w, links.pair_features(syms, staves[k - 1], staves[k], gm, n,
                                                 _braced(syms, staves[k - 1], staves[k])))
-              for k in range(1, len(staves))]
-        decided = links.decode(ps)
-    if gray is not None and len(staves) > 1 and w is None:
+              for k in range(1, n)]
+        decided = list(links.decode(ps))
+    else:
         decided = [_braced(syms, staves[k - 1], staves[k]) or _aligned(syms, staves[k - 1], staves[k])
-                   for k in range(1, len(staves))]
-    if gray is not None and len(staves) > 1:
+                   for k in range(1, n)]
+    said = ["unclear"] * (n - 1)
+    if gray is not None:
         # the ink decides where it is clear: a line through the gap joins -- looked for up to where the staves' lines
         # start (past a brace the paper's noise joined to them), and in the grey levels where the mask sees none (a
         # small render's one-pixel opening line is too pale for it) --, a white gap separates; a brace or bracket
@@ -548,7 +554,7 @@ def _systems(syms: list[Sym], staves: list[Staff], gray=None, ink: bool = False,
         import numpy as np
         page_left = min(st.x0 for st in staves)
         tone: list = []                                # the page's paper and dark levels, once needed
-        for k in range(1, len(staves)):
+        for k in range(1, n):
             a, b = staves[k - 1], staves[k]
             left, bars = _ink_links(gray, syms, a, b, page_left)
             line = 0.0
@@ -558,20 +564,23 @@ def _systems(syms: list[Sym], staves: list[Staff], gray=None, ink: bool = False,
                     tone = tone or [float(np.percentile(levels, 50)), float(np.percentile(levels, 1))]
                     line = max(line, _pale_line(levels, *tone, a, b, page_left))
             if left >= INK_LINK or line >= INK_LINK or bars >= 0.5:
-                decided[k - 1] = True
+                decided[k - 1], said[k - 1] = True, "line"
             elif left < INK_SPLIT and bars < 0.1:
-                decided[k - 1] = False            # white between them: a brace box claiming otherwise is wrong
+                decided[k - 1], said[k - 1] = False, "white"     # white between them: a brace box claiming otherwise is wrong
             elif _braced(syms, a, b):
                 decided[k - 1] = True
+    return [bool(v) for v in decided], said
+
+
+def _systems(syms: list[Sym], staves: list[Staff], gray=None, ink: bool = False, levels=None,
+             linked: list[bool] | None = None) -> list[System]:
+    """``gray``: the page's ink mask; ``levels``: its grey levels. ``linked``: per pair of neighbouring staves
+    whether one system holds both, where the caller has decided it (else _links)."""
+    if linked is None:
+        linked, _ = _links(syms, staves, gray, levels)
     systems: list[System] = []
-    for k, st in enumerate(staves):
-        if k == 0:
-            linked = False
-        elif w is not None or gray is not None:
-            linked = decided[k - 1]
-        else:
-            linked = _braced(syms, staves[k - 1], st) or _aligned(syms, staves[k - 1], st)
-        if linked:
+    for k in range(len(staves)):
+        if k and linked[k - 1]:
             systems[-1].staves.append(k)
         else:
             systems.append(System(staves=[k]))
@@ -708,14 +717,19 @@ def _reconcile(syms: list[Sym], staves: list[Staff], sy: System, ref: int) -> No
 
 
 # ------------------------------------------------------------------------------------------------- ink path
-def _ink_staves(gray, syms: list[Sym]) -> list[Staff] | None:
+def _ink_staves(gray, syms: list[Sym], spare: list | None = None) -> list[Staff] | None:
     """Staves from the staff lines in the ink: the page as it is, and the page cleaned (clean_page) -- a scan's
     tinted, shaded or grainy paper reads as ink to the line finder -- whichever set the detector's confident
-    symbols confirm better (the raw page unless the cleaned one is clearly better)."""
-    staves = _ink_staves_from(gray, gray, syms)
-    other = _ink_staves_from(clean_page(gray), gray, syms)
+    symbols confirm better (the raw page unless the cleaned one is clearly better). ``spare`` is given the staves
+    that set saw and did not take (_spare_staves), likeliest first."""
+    mine: list = []
+    theirs: list = []
+    staves = _ink_staves_from(gray, gray, syms, mine)
+    other = _ink_staves_from(clean_page(gray), gray, syms, theirs)
     if other is not None and (staves is None or _staves_score(other, syms) > 1.02 * _staves_score(staves, syms)):
-        staves = other
+        staves, mine = other, theirs
+    if spare is not None and staves is not None:
+        spare.extend(mine)
     if staves is not None:
         _line_starts(gray, staves)
     return staves
@@ -809,7 +823,41 @@ def _one_line_staves(lines: list, staves: list[Staff], syms: list[Sym]) -> list[
     return out
 
 
-def _ink_staves_from(page, gray, syms: list[Sym]) -> list[Staff] | None:
+def _spare_staves(m, staves: list[Staff], syms: list[Sym], claimed: set) -> list[Staff]:
+    """Staves the page may hold that were not taken, likeliest first: rows of measure boxes too unsure to make a
+    staff of their own, then lines of the finder's that belong to no staff and run as wide as the page's staves (a
+    one-line staff whose clef was not read). Each stands clear of the staves taken. They are staves only for a
+    caller that knows the page holds more staves than were found (_with_layout)."""
+    if not staves:
+        return []
+    sps = sorted(st.sp for st in staves)
+    sp = sps[len(sps) // 2]
+    widths = sorted(st.x1 - st.x0 for st in staves)
+    width = widths[len(widths) // 2]
+
+    def clear(y: float, of: list) -> bool:
+        return not any(o.y0 - ONE_LINE_APART * sp < y < o.y1 + ONE_LINE_APART * sp for o in of)
+
+    out: list[tuple[float, Staff]] = []
+    weak = [s for s in syms if s.fam == "measure" and s.p >= MEASURE_LOW_P and s.i not in claimed and
+            s.box[2] - s.box[0] >= MEASURE_MIN_W * (s.box[3] - s.box[1]) / 4]
+    for st in _rows(weak):
+        if clear(st.mid, staves) and st.x1 - st.x0 >= ONE_LINE_WIDTH * width:
+            out.append((1.0 + sum(syms[i].p for i in st.bars) / len(st.bars), st))
+    staffed = {id(line) for st in m.staves for line in st.lines}
+    for line in m.lines:
+        if id(line) in staffed or line.x1 - line.x0 < ONE_LINE_WIDTH * width or not clear(line.y, staves):
+            continue
+        out.append((line.score * (line.x1 - line.x0) / max(1.0, width),
+                    Staff(bars=[], sp=sp, y0=line.y - 2 * sp, y1=line.y + 2 * sp, x0=float(line.x0), x1=float(line.x1))))
+    spare: list[Staff] = []
+    for _, st in sorted(out, key=lambda t: -t[0]):
+        if clear(st.mid, spare):
+            spare.append(st)
+    return spare
+
+
+def _ink_staves_from(page, gray, syms: list[Sym], spare: list | None = None) -> list[Staff] | None:
     """Staves from the staff lines in ``page`` (vision.page.staves: five long thin runs at one spacing), each
     holding the detected measure boxes that sit on it. A row of measure boxes no ink staff explains (a staff the
     line finder missed) is a staff of its own, as on the box path."""
@@ -852,7 +900,9 @@ def _ink_staves_from(page, gray, syms: list[Sym]) -> list[Staff] | None:
     if not staves:
         return None
     staves += _one_line_staves(m.lines, staves, syms)
-    for st in staves:
+    if spare is not None:
+        spare.extend(_spare_staves(m, staves, syms, claimed))
+    for st in staves + (spare or []):
         st.bars.sort(key=lambda i: syms[i].cx)
     staves.sort(key=lambda st: st.mid)
     return staves
@@ -1020,6 +1070,72 @@ def _assign(syms: list[Sym], staves: list[Staff], only: list[Sym] | None = None)
             s.staff, s.bar = best, bbar
 
 
+DROP_SHARE = 0.34             # a staff holding less than this share of the page's median staff may go (_with_layout)
+
+
+def _staff_holds(syms: list[Sym], st: Staff) -> int:
+    """What stands on a staff: its measure boxes, and the notes, rests and clefs the detector is sure of."""
+    return len(st.bars) + sum(1 for s in syms if s.fam in ("note", "rest", "clef") and s.p >= 0.5 and
+                              st.x0 <= s.cx <= st.x1 and st.y0 - st.sp <= s.cy <= st.y1 + st.sp)
+
+
+def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list[Staff], linked: list[bool],
+                 said: list[str], add: bool) -> tuple[dict, list[Staff], list[bool]]:
+    """The page read with a layout its caller knows: the staves of each of its systems, counted top to bottom (from
+    a reading of the whole score at a glance, where each page is a thumbnail: enough to count staves, and it sees
+    what one page's ink does not say). Returns (what it did, the staves, the pairs joined).
+
+    The layout decides how the staves found are grouped into systems, once they are as many as it counts. Where
+    more were found, the weakest go -- those holding less than DROP_SHARE of what the page's median staff holds
+    (an inset ossia, a line of text read as a staff, a second reading of one staff); where fewer, the likeliest of
+    the staves the finder saw and did not take join (``spare``, when ``add``). A layout that cannot be met that
+    way is not used: the page is read as without it, and ``why`` says so. The notes are read as ever; the layout
+    says only which staves there are and which are played together."""
+    sizes, run = [], 0
+    for k in range(len(staves)):
+        if k and not linked[k - 1]:
+            sizes.append(run)
+            run = 0
+        run += 1
+    if staves:
+        sizes.append(run)
+    try:
+        target = [int(n) for n in layout]
+    except (TypeError, ValueError):
+        target = []
+    prior = {"target": target, "own": sizes, "said": list(said), "used": False, "dropped": 0, "added": 0}
+    total = sum(target)
+    if not target or any(n < 1 for n in target):
+        prior["why"] = "the layout counts no staves"
+        return prior, staves, linked
+    fitted = sorted(staves, key=lambda st: st.mid)
+    if len(fitted) > total:
+        holds = {id(st): _staff_holds(syms, st) for st in fitted}
+        ranked = sorted(holds.values())
+        floor = DROP_SHARE * ranked[len(ranked) // 2]
+        for st in sorted(fitted, key=lambda st: holds[id(st)]):
+            if len(fitted) == total or holds[id(st)] >= floor:
+                break
+            fitted = [o for o in fitted if o is not st]
+        prior["dropped"] = len(staves) - len(fitted)
+    elif len(fitted) < total and add:
+        for st in spare:
+            if len(fitted) == total:
+                break
+            fitted.append(st)
+        prior["added"] = len(fitted) - len(staves)
+        fitted.sort(key=lambda st: st.mid)
+    if len(fitted) != total:
+        prior.update(dropped=0, added=0, why=f"{len(staves)} staves found and {total} counted")
+        return prior, staves, linked
+    ends, at = set(), 0
+    for n in target[:-1]:
+        at += n
+        ends.add(at)
+    prior["used"] = True
+    return prior, fitted, [k not in ends for k in range(1, total)]
+
+
 CAND_SKIP = ("measure", "barLine")         # structure is decided before candidates join
 
 
@@ -1027,8 +1143,10 @@ _FORCED: dict = {}            # system (its top staff's index) -> x of bar lines
 
 
 def build(dets: list[dict], width: float, height: float, image=None, cands: list[dict] | None = None,
-          cuts: dict | None = None) -> Layout:
+          cuts: dict | None = None, layout: list | None = None) -> Layout:
     """``image``: the page (PIL image or grey array); with it, the ink between staves decides the systems.
+    ``layout``: the staves of each of the page's systems, top to bottom, where the caller knows them
+    (_with_layout); ``Layout.prior`` then says what it did.
     ``cands``: the detector's sub-threshold candidates; once the structure stands, the ones no symbol of their
     family already covers join as symbols flagged ``cand`` (the model decides whether they are real).
     ``cuts``: bar lines to add, per system (its top staff's index) -- the ones a first reading showed were
@@ -1040,16 +1158,19 @@ def build(dets: list[dict], width: float, height: float, image=None, cands: list
     if image is not None:
         gray = unframe(np.asarray(image.convert("L") if hasattr(image, "convert") else image))
     syms = merge(dets)
-    staves = _ink_staves(gray, syms) if gray is not None else None
+    spare: list = []
+    staves = _ink_staves(gray, syms, spare) if gray is not None else None
     mask = page_mask(gray) if gray is not None else None
     ink_path = bool(staves)
-    if staves:
-        systems = _systems(syms, staves, mask, ink=True, levels=gray)
-    else:
+    if not staves:
         staves = _staves(syms)
         _fill_gaps(syms, staves)
         _snap_bars(syms, staves)
-        systems = _systems(syms, staves, mask, levels=gray)
+    linked, prior = None, None
+    if layout is not None:
+        linked, said = _links(syms, staves, mask, gray)
+        prior, staves, linked = _with_layout(layout, syms, staves, spare, linked, said, add=ink_path)
+    systems = _systems(syms, staves, mask, ink=ink_path, levels=gray, linked=linked)
     _assign(syms, staves)
     if cands:
         new = []
@@ -1062,4 +1183,5 @@ def build(dets: list[dict], width: float, height: float, image=None, cands: list
         _assign(syms, staves, only=new)
     sps = sorted(st.sp for st in staves)
     sp = sps[len(sps) // 2] if sps else 10.0
-    return Layout(syms=syms, staves=staves, systems=systems, sp=sp, width=width, height=height, ink=ink_path)
+    return Layout(syms=syms, staves=staves, systems=systems, sp=sp, width=width, height=height, ink=ink_path,
+                  prior=prior)
