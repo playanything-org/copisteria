@@ -523,3 +523,19 @@ def test_a_layout_does_not_part_what_the_page_joins_nor_join_bar_lines_that_do_n
     assert [len(sy.staves) for sy in L.systems] == [1, 1]
     L = front.build(a + c, 500, 300, layout=[2])
     assert [len(sy.staves) for sy in L.systems] == [1, 1] and L.prior["why"] == "the layout joins staves whose bar lines do not line up"
+
+
+def test_a_join_a_layout_adds_has_to_fit_the_pages_spacing_and_the_scores_size(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    rows = lambda ys: sum((staff_row(y, [0, 112, 195, 300] if n % 2 else [0, 100, 200, 300]) for n, y in enumerate(ys)), [])     # noqa: E731
+    # four staves the front end reads as four systems (their bar lines waver between them): two tight pairs, a wide gap
+    L = front.build(rows([100, 180, 400, 480]), 400, 600)
+    assert [len(sy.staves) for sy in L.systems] == [1, 1, 1, 1]
+    assert [len(sy.staves) for sy in front.build(rows([100, 180, 400, 480]), 400, 600, layout=[2, 2]).systems] == [2, 2]
+    # counted as [1, 3] the layout would join across the wide gap and leave the tight one between two systems
+    L = front.build(rows([100, 180, 400, 480]), 400, 600, layout=[1, 3])
+    assert not L.prior["used"] and L.prior["why"] == "the layout joins staves as far apart as two of its systems"
+    # and a system of more staves than the score has is no system of this score
+    L = front.build(rows([100, 180, 400, 480]), 400, 600, layout=[2, 2], most=1)
+    assert not L.prior["used"] and L.prior["why"] == "the layout counts a system of 2 staves and the score has 1"
