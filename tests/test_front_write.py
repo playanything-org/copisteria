@@ -401,3 +401,42 @@ def test_a_staff_the_line_finder_finds_twice_is_one_staff():
     assert front._without_doubles([upper, double], []) == [double]
     # staves that only touch are two staves
     assert front._without_doubles([found(100), found(138)], []) == [found(100), found(138)]
+
+
+def _rostered(L, tok, roster):
+    """Per part its staves and per bar whether it sounds, and why the roster was not used (None where it was)."""
+    facts = {}
+    root = ET.fromstring(write.write(_reading(L, tok), roster=roster, facts=facts).split("\n", 2)[2])
+    return [(p.findtext("measure/attributes/staves") or "1", [m.find("note/pitch") is not None for m in p.findall("measure")])
+            for p in root.findall("part")], facts["roster"]
+
+
+def test_a_page_of_piano_alone_is_written_into_the_rosters_piano(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    # a song's page that shows only its piano: by itself one part of two staves; with the song's roster (a voice
+    # and a piano of two staves) the voice's part is there and silent, and the piano holds the music, brace or not
+    rows = staff_row(100, [0, 150, 300]) + staff_row(180, [0, 150, 300])
+    note = [det("note_quarter", (50, 115, 60, 125), staff_position=0)]
+    for brace in ([det("grpSym_brace", (0, 100, 8, 220))], []):
+        L = front.build(rows + brace + note, 400, 300)
+        assert [len(sy.staves) for sy in L.systems] == [2]
+        parts, why = _rostered(L, _tokens(L), [1, 2])
+        assert why is None and parts == [("1", [False, False]), ("2", [True, False])]
+
+
+def test_a_voice_alone_is_the_rosters_voice_and_a_page_the_roster_does_not_explain_is_planned_as_before(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    voice = staff_row(100, [0, 150, 300]) + [det("note_quarter", (50, 115, 60, 125), staff_position=0)]
+    L = front.build(voice, 400, 300)
+    parts, why = _rostered(L, _tokens(L), [1, 2])
+    assert why is None and parts == [("1", [True, False]), ("2", [False, False])]
+    # three staves where the roster has two: the page keeps its own plan, and says why
+    L = front.build(staff_row(100, [0, 150, 300]) + staff_row(180, [0, 150, 300]) + staff_row(260, [0, 150, 300]), 400, 400)
+    parts, why = _rostered(L, _tokens(L), [2])
+    assert len(parts) == 3 and "3 staves" in why
+    # a brace over the two staves the roster gives to two instruments: not this roster's page
+    L = front.build(staff_row(100, [0, 150, 300]) + staff_row(180, [0, 150, 300]) + [det("grpSym_brace", (0, 100, 8, 220))], 400, 300)
+    parts, why = _rostered(L, _tokens(L), [1, 1])
+    assert parts == [("2", [False, False])] and "brace" in why

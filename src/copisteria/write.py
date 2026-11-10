@@ -292,19 +292,22 @@ def _align_systems(rd: Reading, plans: list, texts: list | None = None) -> list[
     return out
 
 
-def _part_groups(rd: Reading, plans: list) -> list[tuple[int, int, str]]:
+def _part_groups(rd: Reading, plans: list, place: list | None = None) -> list[tuple[int, int, str]]:
     """(first part, last part, bracket|brace) for every detected bracket or brace that spans more than one part of
     the fullest system."""
     L = rd.layout
     if not L.systems or len(plans) < 2:
         return []
-    tmpl = max(L.systems, key=lambda sy: len(sy.staves))
+    n_tmpl = max(range(len(L.systems)), key=lambda n: len(L.systems[n].staves))
+    tmpl = L.systems[n_tmpl]
+    # the place of each of its staves: its count from the top, unless the parts are a roster's (roster.plan)
+    places = {k: p for p, k in place[n_tmpl].items()} if place else dict(zip(tmpl.staves, range(len(tmpl.staves))))
     part_of = {p: n for n, pl in enumerate(plans) for p in pl.staves}
     out = []
     for s in L.syms:
         if not _real(rd, s.i) or _cls(rd, s.i) not in ("grpSym_bracket", "grpSym_brace"):
             continue
-        cov = sorted({part_of[p] for p, k in enumerate(tmpl.staves) if p in part_of and
+        cov = sorted({part_of[places[k]] for k in tmpl.staves if places[k] in part_of and
                       s.box[1] - L.staves[k].sp <= L.staves[k].mid <= s.box[3] + L.staves[k].sp})
         if len(cov) >= 2 and (cov[0], cov[-1]) not in [(a, b) for a, b, _ in out]:
             out.append((cov[0], cov[-1], "bracket" if s.cls.endswith("bracket") else "brace"))
@@ -1253,10 +1256,13 @@ def _part_names(rd: Reading, plans: list, texts: list, place: list) -> list[str 
 
 
 def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None, image=None,
-          facts: dict | None = None, align: bool = True) -> str:
+          facts: dict | None = None, align: bool = True, roster: list[int] | None = None) -> str:
     """``image``: the page (PIL image or grey array), for what is read off the ink here (dashes after words).
     ``align``: False counts every system's staves into the parts from the top, whatever they say (as the writer
     did before _align_systems), for a caller that places a system's staves itself.
+    ``roster``: the score's instruments as the caller knows them, top to bottom, each as its number of staves. On a
+    page whose every system it explains the parts are the roster's (roster.plan), whatever ``align`` says; on any
+    other page they are planned as without it. ``facts["roster"]`` says which: None where it was used, else why not.
     ``facts``: a dict that is given what the writer decided and the MusicXML does not say, for a caller that wants
     more than the score: ``plans`` (each part's places in the fullest system), ``place`` (per system, place ->
     staff: _align_systems), ``columns`` ((system, column) of each measure), ``built`` (per part, per measure, its
@@ -1268,6 +1274,12 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
     texts = texts or []
     # per system: place (in the fullest system) -> staff
     place = _align_systems(rd, plans, texts) if align else [dict(enumerate(sy.staves)) for sy in L.systems]
+    unexplained = None
+    if roster is not None:
+        from . import roster as known
+        planned, unexplained = known.plan(rd, roster)
+        if planned is not None:
+            plans, place = planned
     root = ET.Element("score-partwise", version="4.0")
     t_title = title or next((t["text"] for t in texts if t.get("role") == "pgHead_title"), None)
     if t_title:
@@ -1280,7 +1292,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
     _sub(enc, "software", "copisteria")
     plist = _sub(root, "part-list")
     names = _part_names(rd, plans, texts, place)
-    groups = _part_groups(rd, plans)
+    groups = _part_groups(rd, plans, place)
     for n, pl in enumerate(plans):
         for g, (a, b, sym) in enumerate(groups):
             if a == n:
@@ -1603,6 +1615,8 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                     _sub(ne, "voice", 1)
     if facts is not None:
         facts.update(plans=plans, place=place, columns=columns, built=built, bar_ends=bar_ends, untied=untied, div=div)
+        if roster is not None:
+            facts["roster"] = unexplained
     ET.indent(root)
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + \
         '<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" ' \
