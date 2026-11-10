@@ -1107,6 +1107,61 @@ def _apart(syms: list[Sym], a: Staff, b: Staff) -> bool:
     return hit(ea, eb) < 0.5 and hit(eb, ea) < 0.5
 
 
+LINED_UP = 0.75                # two staves share their bar lines where this share of the fewer one's have a partner
+TELLING = 3                    # a staff says whose bar lines it shares once it shows this many
+AROUND = 3                     # staves on each side of a join that speak for it
+AROUND_TOL_SP = 4.0            # two staves' bar lines are one where they stand this near (staff spaces), and within
+AROUND_TOL_BAR = 0.1           # this share of the narrowest bar between them
+
+
+def _lined_up(syms: list[Sym], a: Staff, b: Staff) -> bool | None:
+    """Whether two staves share their bar lines: of those of the one that shows fewer over their common stretch,
+    LINED_UP have a partner on the other. None where either shows fewer than TELLING: two lines coincide by chance
+    too easily to say anything.
+
+    A partner stands within AROUND_TOL_SP staff spaces, wider than _apart allows: these are the right edges of
+    measure boxes, which on some scans end three or four staff spaces apart on staves of one system, and what
+    tells one system from two is how many of them agree, not how exactly (three unrelated lines each finding a
+    partner that near happens once in some hundred pairs). On a page of narrow bars the reach is a tenth of the
+    narrowest bar, so that lines a bar apart are never partners."""
+    sp = (a.sp + b.sp) / 2
+    lo, hi = max(a.x0, b.x0) - sp, min(a.x1, b.x1) + sp
+    ea, eb = (sorted(syms[k].box[2] for k in st.bars[:-1] if not syms[k].synthetic and lo <= syms[k].box[2] <= hi) for st in (a, b))
+    if len(ea) < TELLING or len(eb) < TELLING:
+        return None
+    few, many = (ea, eb) if len(ea) <= len(eb) else (eb, ea)
+    tol = min(AROUND_TOL_SP * sp, AROUND_TOL_BAR * min(y - x for x, y in zip(many, many[1:])))
+    return sum(1 for x in few if any(abs(x - y) <= tol for y in many)) >= LINED_UP * len(few)
+
+
+def _joined_around(syms: list[Sym], upper: list[Staff], lower: list[Staff]) -> bool:
+    """Whether the staves on the two sides of a join share bar lines although the two at the join do not: of the
+    pairs of one staff above it and one below it that have something to say, more than half line up. Only the AROUND
+    staves nearest the join on each side speak (``upper`` and ``lower`` run to the join and from it): staves further
+    off say nothing of it, and where a layout states one system over three, the outer two, alike, would vouch for
+    both joins with the one between them. Where a staff
+    shows little (a staff of rests in a band score: three measure boxes for six bars) the detector's boxes end two
+    or three staff spaces off, and that one staff lines up with neither neighbour; a system is not parted for it
+    where the staves around it are plainly one. Staves that are two systems each have bar lines of their own, and
+    hardly a pair across them lines up. Where no pair has enough to say because one side shows too little (one
+    staff of rests under a system), that side is held to every bar line it shows: each has to stand where a staff
+    of the other side that shows enough has one. Where neither side shows enough, nothing is said."""
+    upper, lower = upper[-AROUND:], lower[:AROUND]
+    said = [s for s in (_lined_up(syms, u, v) for u in upper for v in lower) if s is not None]
+    if said:
+        return 2 * sum(said) > len(said)
+    both = upper + lower
+    sp = sum(st.sp for st in both) / len(both)
+    lo, hi = max(st.x0 for st in both) - sp, min(st.x1 for st in both) + sp
+    shown = lambda st: [syms[k].box[2] for k in st.bars[:-1] if not syms[k].synthetic and lo <= syms[k].box[2] <= hi]   # noqa: E731
+    telling = [[x for st in side if len(shown(st)) >= TELLING for x in shown(st)] for side in (upper, lower)]
+    if bool(telling[0]) == bool(telling[1]):
+        return False                              # neither side has a staff that says enough
+    few = [x for st in (lower if telling[0] else upper) for x in shown(st)]
+    many = telling[0] or telling[1]
+    return len(few) >= 2 and all(any(abs(x - y) <= ALIGN_TOL_SP * sp for y in many) for x in few)
+
+
 def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list[Staff], links_of,
                  add: bool, most: int | None = None) -> tuple[dict, list[Staff], list[bool]]:
     """The page read with a layout its caller knows: the staves of each of its systems, counted top to bottom (from
@@ -1125,8 +1180,9 @@ def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list
     below is an alternative printed under the one above. So a layout is not used where it would part two staves
     the page joins; where it cannot be met as above; where it counts a system of more staves than the score has
     (``most``, where the caller knows the score's instruments); or where a join it adds does not fit the page: two
-    staves whose bar lines plainly do not line up, or a gap as wide as one it leaves between two systems (staves
-    of one system stand closer than systems do). The page is then read as without it, and ``why`` says so. The
+    staves whose bar lines plainly do not line up (unless staves of the system the layout forms line up across
+    them, _joined_around), or a gap as wide as one it leaves between two systems (staves of one system stand
+    closer than systems do). The page is then read as without it, and ``why`` says so. The
     notes are read as ever; the layout says only which staves there are and which are played together."""
     linked, said = links_of(staves)
     sizes, run = [], 0
@@ -1183,11 +1239,14 @@ def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list
     joined, _ = links_of(fitted) if prior["dropped"] or prior["added"] else (linked, said)
     gap = lambda k: fitted[k].y0 - fitted[k - 1].y1                        # noqa: E731
     between = min((gap(k) for k in ends), default=math.inf)
+    bounds = [0, *sorted(ends), total]
+    above = lambda k: fitted[max(b for b in bounds if b < k):k]            # noqa: E731  (the layout's system, to the join)
+    below = lambda k: fitted[k:min(b for b in bounds if b > k)]            # noqa: E731
     for k in range(1, total):
         if joined[k - 1] and not forced[k - 1]:
             return unused("the layout parts staves the page joins")
         if forced[k - 1] and not joined[k - 1]:
-            if _apart(syms, fitted[k - 1], fitted[k]):
+            if _apart(syms, fitted[k - 1], fitted[k]) and not _joined_around(syms, above(k), below(k)):
                 return unused("the layout joins staves whose bar lines do not line up")
             if gap(k) >= between:
                 return unused("the layout joins staves as far apart as two of its systems")

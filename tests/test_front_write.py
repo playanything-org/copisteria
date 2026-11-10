@@ -726,6 +726,45 @@ def test_a_layout_does_not_part_what_the_page_joins_nor_join_bar_lines_that_do_n
     assert [len(sy.staves) for sy in L.systems] == [1, 1] and L.prior["why"] == "the layout joins staves whose bar lines do not line up"
 
 
+def test_one_staff_out_of_line_does_not_part_a_system_whose_other_staves_line_up_across_it():
+    """A band score's staff of rests shows a few measure boxes that end two or three staff spaces off, or a different
+    few of its system's bar lines than its neighbour: the two staves at that join 'do not line up', and a stated
+    ten-staff system was refused for it. A join is judged with the system the layout forms: where a staff above it
+    lines up with a staff below it, the staves are one system."""
+    said = lambda sts: ([False] * (len(sts) - 1), ["white"] * (len(sts) - 1))      # noqa: E731
+
+    def page(rows):
+        dets = [d for y, xs in rows for d in staff_row(y, xs)]
+        L = front.build(dets, 700, 100 * len(rows) + 200)
+        return L.syms, L.staves
+
+    full = [0, 100, 200, 300, 400, 500, 600]
+    # six staves of one system: two that show every bar line, a staff whose boxes end 30 off, and three that show few
+    syms, staves = page([(100, full), (200, [0, 100, 400, 600]), (300, [0, 230, 530, 600]), (400, full),
+                         (500, [0, 100, 300, 600]), (600, [0, 200, 400, 600])])
+    assert front._apart(syms, staves[1], staves[2]) and front._apart(syms, staves[2], staves[3])
+    assert front._lined_up(syms, staves[0], staves[3]) and not front._lined_up(syms, staves[1], staves[2])
+    prior, fitted, linked = front._with_layout([6], syms, staves, [], said, add=False)
+    assert prior["used"] and linked == [True] * 5
+    # four lines of one part, each with bar lines of its own, are not one system whatever is counted
+    syms, staves = page([(100 * (k + 1), [0, 100 + 30 * k, 230 + 30 * k, 360 + 30 * k, 490 + 30 * k, 600]) for k in range(4)])
+    assert not any(front._lined_up(syms, a, b) for a in staves for b in staves if a is not b)
+    prior, fitted, linked = front._with_layout([4], syms, staves, [], said, add=False)
+    assert not prior["used"] and prior["why"] == "the layout joins staves whose bar lines do not line up" and linked == [False] * 3
+    # nor are two systems with different bar lines counted as one: no staff of the upper lines up with one of the lower
+    syms, staves = page([(100, full), (200, [0, 100, 400, 600]), (300, [0, 200, 500, 600]),
+                         (400, [0, 150, 250, 350, 450, 550, 600]), (500, [0, 150, 450, 600]), (600, [0, 250, 550, 600])])
+    assert not front._joined_around(syms, staves[:3], staves[3:])
+    assert not front._with_layout([6], syms, staves, [], said, add=False)[0]["used"]
+    # nor three systems whose first and third are alike: only the staves next to a join speak for it
+    other = [0, 150, 250, 350, 450, 550, 600]
+    syms, staves = page([(100, full), (200, full), (300, full), (400, other), (500, other), (600, other), (700, full), (800, full), (900, full)])
+    assert front._lined_up(syms, staves[0], staves[8]) and not front._joined_around(syms, staves[:3], staves[3:])
+    assert not front._with_layout([9], syms, staves, [], said, add=False)[0]["used"]
+    # a staff that shows one bar line says nothing either way, and two staves alone are judged as before
+    assert not front._lined_up(syms, staves[0], front.Staff(bars=[], sp=10.0, y0=700.0, y1=740.0, x0=0.0, x1=600.0))
+
+
 def test_a_join_a_layout_adds_has_to_fit_the_pages_spacing_and_the_scores_size(monkeypatch):
     from copisteria import links
     monkeypatch.setattr(links, "load", lambda: None)

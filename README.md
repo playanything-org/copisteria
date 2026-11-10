@@ -25,6 +25,12 @@ Reading (what a page's MusicXML holds):
   A page whose paper tone varies by more than `SHADED` is masked flat; any other page keeps the mask it had.
 - **A line with a percussion clef on it is a one-line staff** (`front.py` `_one_line_staves`). The finder knows
   five-line staves only, so a triangle's or a tambourine's staff was not there and its system read a staff short.
+- **One staff out of line does not part a system the caller states** (`front.py` `_joined_around`). A layout's
+  join was refused where the two staves at it did not line up bar for bar. A staff of rests in a band score shows
+  three measure boxes for six bars, ending two or three staff spaces off, and lines up with neither neighbour: a
+  stated ten-staff system was read as ten systems of one staff, page after page. The join now stands where the
+  three staves above it and the three below it line up with each other: of the pairs across it that show three
+  bar lines or more, at least half. Two systems with bar lines of their own have hardly such a pair.
 - **No voice holds two events at once** (`write.py` `_unlapped`). On a part of several staves the model's onset
   places each event, and where it puts one before the last has ended (a hand's two voices read as one, an onset
   read wrong) the voice was written with a backup inside it. A reader of the score that keeps one event at a time
