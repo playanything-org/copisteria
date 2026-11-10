@@ -1,3 +1,4 @@
+# Modified by Play Anything (https://github.com/playanything-org/copisteria): see CHANGES.md.
 """Read a page: detections -> front end -> the evidence model -> every symbol's final reading.
 
 Each system is read in a window with its neighbours (the previous and the next system), and only its own tokens
@@ -24,7 +25,7 @@ OPTIONAL = ("heads.onset",)
 
 
 def load_model(path: str | Path, device="cpu") -> EvidenceNet:
-    ck = torch.load(path, map_location=device, weights_only=False)
+    ck = torch.load(path, map_location=device, weights_only=True)
     m = EvidenceNet(**{k: v for k, v in ck["cfg"].items()}).to(device).eval()
     missing, unexpected = m.load_state_dict(ck["model"], strict=False)
     # an older checkpoint lacks heads added since (their outputs are then not read); anything else is an error

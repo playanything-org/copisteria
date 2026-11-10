@@ -1,3 +1,4 @@
+# Modified by Play Anything (https://github.com/playanything-org/copisteria): see CHANGES.md.
 """Read pages end to end: page image -> v7 detections (cached) -> front end -> evidence model -> MusicXML + viewer.
 
   python -m copisteria.pipeline page.png [more pages ...] --out out
@@ -51,7 +52,9 @@ def detections(png: Path, want_size: bool = False):
     from .detect import Detector, imgsz_for, measure_space, staff_space
     page = from_png(png)
     ink = find_staves(page.image()).spacing
-    det = Detector()
+    if not _DET or type(_DET[0]) is not Detector:      # one detector for the process, not one for every page
+        _DET[:] = [Detector()]
+    det = _DET[0]
     from PIL import Image
     im = Image.open(png)
     # a first read at the default size: its measure boxes check the ink's staff space, and stand in for it where the

@@ -1,3 +1,4 @@
+# Modified by Play Anything (https://github.com/playanything-org/copisteria): see CHANGES.md.
 """The v7 detector, loaded once, run over many pages (the training tokenizer and the reader both use it).
 
 Output is one record per detection: cls, conf, xyxy, bbox, and for notes and rests their attributes (attrs,
@@ -50,7 +51,7 @@ class Detector:
         from .detector.small.export import ATTR_VOCAB, ATTRS
         self.torch, self.M = torch, M
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        ck = torch.load(weights, map_location=self.device, weights_only=False)
+        ck = torch.load(weights, map_location=self.device, weights_only=True)
         self.classes = ck["classes"]
         self.model = M.build(ck["arch"], self.classes).to(self.device).eval()
         self.model.load_state_dict(ck["ema"])
