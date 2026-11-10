@@ -411,10 +411,13 @@ def ink_mask(gray):
     return _dark(unframe(gray))
 
 
-def clean_page(gray):
-    """The page as black ink on white for the staff-line finder: the paper's large-scale shading (a vignette, a
-    shadow, a tinted or textured sheet) divided out, then the page-relative ink threshold (ink_mask). The line
-    finder's own threshold takes anything short of pure white for ink, which on a scan's paper is everything."""
+SHADED = 0.12                 # a page is shaded once its paper's tone varies by this share of it (_shading)
+
+
+def _shading(gray):
+    """(the page's paper with the ink filled in, at the page's size; how much its tone varies over the page: the
+    spread between its 5th and 95th percentiles as a share of its median). A render or a flat scan varies by a few
+    hundredths; a photograph under a lamp, or a book's page curving into its gutter, by several tenths."""
     import numpy as np
     from scipy import ndimage
     g = gray.astype(np.float32)
@@ -422,9 +425,37 @@ def clean_page(gray):
     small = g[::4, ::4]
     bg = ndimage.grey_closing(small, size=(max(3, k // 4), max(3, k // 4)))      # the paper, ink filled in
     bg = ndimage.uniform_filter(bg, size=max(3, k // 4))
-    bg = np.kron(bg, np.ones((4, 4), np.float32))[:g.shape[0], :g.shape[1]]
-    flat = np.clip(g / np.maximum(bg, 1.0) * 255.0, 0, 255)
-    return np.where(ink_mask(flat), 0, 255).astype(np.uint8)
+    lo, mid, hi = (float(v) for v in np.percentile(bg, (5, 50, 95)))
+    return np.kron(bg, np.ones((4, 4), np.float32))[:g.shape[0], :g.shape[1]], (hi - lo) / max(1.0, mid)
+
+
+def flat_page(gray):
+    """The page with its paper's large-scale shading (a vignette, a shadow, a tinted or textured sheet) divided
+    out: the paper white all over, the ink as dark against it as it was."""
+    import numpy as np
+    bg, _ = _shading(gray)
+    return np.clip(gray.astype(np.float32) / np.maximum(bg, 1.0) * 255.0, 0, 255)
+
+
+def page_mask(gray):
+    """The page's ink for what is read off it between and across the staves (the line that opens a system, the bar
+    lines' strokes). ink_mask sets one threshold for the whole page, from its median paper: under a photograph's
+    uneven light the paper in a shadow falls below it and is ink all over, and a thin line in a bright patch rises
+    above it and is paper. So a shaded page (SHADED) is masked with its shading divided out; any other page as it
+    is, by the same threshold as before."""
+    bg, spread = _shading(gray)
+    if spread < SHADED:
+        return ink_mask(gray)
+    import numpy as np
+    return ink_mask(np.clip(gray.astype(np.float32) / np.maximum(bg, 1.0) * 255.0, 0, 255))
+
+
+def clean_page(gray):
+    """The page as black ink on white for the staff-line finder: the paper's large-scale shading (a vignette, a
+    shadow, a tinted or textured sheet) divided out, then the page-relative ink threshold (ink_mask). The line
+    finder's own threshold takes anything short of pure white for ink, which on a scan's paper is everything."""
+    import numpy as np
+    return np.where(ink_mask(flat_page(gray)), 0, 255).astype(np.uint8)
 
 
 def _ink_run(mask, x: float, y0: float, y1: float, reach: int = 2) -> float:
@@ -976,7 +1007,7 @@ def build(dets: list[dict], width: float, height: float, image=None, cands: list
         gray = unframe(np.asarray(image.convert("L") if hasattr(image, "convert") else image))
     syms = merge(dets)
     staves = _ink_staves(gray, syms) if gray is not None else None
-    mask = ink_mask(gray) if gray is not None else None
+    mask = page_mask(gray) if gray is not None else None
     ink_path = bool(staves)
     if staves:
         systems = _systems(syms, staves, mask, ink=True, levels=gray)
