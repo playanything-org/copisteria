@@ -1,3 +1,4 @@
+# Modified by Play Anything (https://github.com/playanything-org/copisteria): see CHANGES.md.
 """A page's reading -> MusicXML. Transcription only: every decision was the model's.
 
 The writer lays the model's readings out the way MusicXML wants them and adds nothing to the page: a bar's notes
@@ -1023,10 +1024,12 @@ def _fit_value(q: Fraction) -> tuple[str, int] | None:
     return None
 
 
-def _chop(evs: list[Event], cut: Fraction) -> list[Event]:
+def _chop(evs: list[Event], cut: Fraction, cut_out: list | None = None) -> list[Event]:
     """A voice cut at ``cut`` quarters, its bar column's length: what starts at or after it is dropped, a plain note
     or rest that runs past it ends there (a tuplet member, or one no note value fits, is dropped); the beams, tuplet
-    brackets, ties and slurs the cut leaves open are closed. A voice that ends in time comes back as it is."""
+    brackets, ties and slurs the cut leaves open are closed. A voice that ends in time comes back as it is.
+    ``cut_out`` takes what the cut changed: (event, None) for one dropped, (event, (type, dots)) for one shortened,
+    with the value it was read as."""
     starts, end = _voice_starts(evs, cut)
     if end <= cut:
         return evs
@@ -1052,12 +1055,16 @@ def _chop(evs: list[Event], cut: Fraction) -> list[Event]:
             if fit is None:
                 dropped.append(e)
                 continue
+            if cut_out is not None:
+                cut_out.append((e, (e.typ, e.dots)))
             e.typ, e.dots = fit
             e.dur = cut - s
             e.beams = []
             shortened = True
         root = e
         kept.append((e, s))
+    if cut_out is not None:
+        cut_out.extend((e, None) for e in dropped)
     out, cursor = [], Fraction(0)
     for e, s in kept:
         if not e.chord:
@@ -1245,12 +1252,22 @@ def _part_names(rd: Reading, plans: list, texts: list, place: list) -> list[str 
     return names
 
 
-def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None, image=None) -> str:
-    """``image``: the page (PIL image or grey array), for what is read off the ink here (dashes after words)."""
+def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None, image=None,
+          facts: dict | None = None, align: bool = True) -> str:
+    """``image``: the page (PIL image or grey array), for what is read off the ink here (dashes after words).
+    ``align``: False counts every system's staves into the parts from the top, whatever they say (as the writer
+    did before _align_systems), for a caller that places a system's staves itself.
+    ``facts``: a dict that is given what the writer decided and the MusicXML does not say, for a caller that wants
+    more than the score: ``plans`` (each part's places in the fullest system), ``place`` (per system, place ->
+    staff: _align_systems), ``columns`` ((system, column) of each measure), ``built`` (per part, per measure, its
+    staves' events as written; a measure's ``number``, and per staff ``cut``, what _chop dropped or shortened, and
+    ``fill``, (voice, start, length) of each rest written unprinted for time no event was read in), ``bar_ends``,
+    ``untied`` ((note, partner or None) of each tie read and not written) and ``div``."""
     L = rd.layout
     plans = _plan_parts(rd)
     texts = texts or []
-    place = _align_systems(rd, plans, texts)            # per system: place (in the fullest system) -> staff
+    # per system: place (in the fullest system) -> staff
+    place = _align_systems(rd, plans, texts) if align else [dict(enumerate(sy.staves)) for sy in L.systems]
     root = ET.Element("score-partwise", version="4.0")
     t_title = title or next((t["text"] for t in texts if t.get("role") == "pgHead_title"), None)
     if t_title:
@@ -1368,6 +1385,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                             break
                     pairs.append((e, partner, partner is not None and groups[f_i] == groups[a_i] + 1))
     kept = _drawn_ties(rd, pairs)
+    untied = [(e, partner) for n, (e, partner, _) in enumerate(pairs) if n not in kept]
     for n, (e, partner, _) in enumerate(pairs):
         if n not in kept:
             e.tie = False
@@ -1390,7 +1408,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
             for st in m["staves"]:
                 if st is not None and bar_ends[m_i] is not None:
                     for v, evs in st["voices"].items():
-                        st["voices"][v] = _chop(evs, bar_ends[m_i])
+                        st["voices"][v] = _chop(evs, bar_ends[m_i], st.setdefault("cut", []))
                         all_durs.update(e.dur for e in st["voices"][v])
     all_durs.update(n for n in bar_ends if n)
 
@@ -1413,6 +1431,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
         pending_endings: list = []
         for m_i, m in enumerate(measures):
             number += 1
+            m["number"] = number
             staves = m["staves"]
             first = next((s for s in staves if s), None)
             meas = _sub(part, "measure", number=number)
@@ -1548,6 +1567,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                         # time a staff's first voice leaves before the bar line (what the decode reads as notes the
                         # detector missed) is the bar's all the same: written as a rest that is not printed, so the
                         # bar has its length on every staff and nothing is drawn that the page does not show
+                        st.setdefault("fill", []).append((v, pos_q, bar_end - pos_q))
                         ne = _sub(meas, "note", print_object="no")
                         _sub(ne, "rest")
                         _sub(ne, "duration", units(bar_end - pos_q))
@@ -1581,6 +1601,8 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                     _sub(ne, "rest", measure="yes")
                     _sub(ne, "duration", units(bar_len))
                     _sub(ne, "voice", 1)
+    if facts is not None:
+        facts.update(plans=plans, place=place, columns=columns, built=built, bar_ends=bar_ends, untied=untied, div=div)
     ET.indent(root)
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + \
         '<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" ' \
