@@ -440,3 +440,19 @@ def test_a_voice_alone_is_the_rosters_voice_and_a_page_the_roster_does_not_expla
     L = front.build(staff_row(100, [0, 150, 300]) + staff_row(180, [0, 150, 300]) + [det("grpSym_brace", (0, 100, 8, 220))], 400, 300)
     parts, why = _rostered(L, _tokens(L), [1, 1])
     assert parts == [("2", [False, False])] and "brace" in why
+
+
+def test_a_line_with_a_percussion_clef_on_it_is_a_one_line_staff():
+    from copisteria.vision.page.staves import Line
+    staves = [front.Staff(bars=[], sp=10.0, y0=100.0, y1=140.0, x0=0.0, x1=400.0),
+              front.Staff(bars=[], sp=10.0, y0=300.0, y1=340.0, x0=0.0, x1=400.0)]
+    line = lambda y, x1=400: Line(y=y, x0=0, x1=x1, thickness=2, score=0.5)      # noqa: E731
+    clef = lambda y: det("clef_perc", (20, y - 10, 30, y + 10))                  # noqa: E731
+    # the triangle's line between the two staves, its clef on it
+    (found,) = front._one_line_staves([line(220)], staves, front.merge([clef(221)]))
+    assert (found.y0, found.y1, found.sp, found.x0, found.x1) == (200.0, 240.0, 10.0, 0.0, 400.0)
+    # a drum kit's clef stands on a five-line staff; a short rule, a line without a clef and a staff's own line are none
+    assert front._one_line_staves([line(120)], staves, front.merge([clef(120)])) == []
+    assert front._one_line_staves([line(220, x1=100)], staves, front.merge([clef(221)])) == []
+    assert front._one_line_staves([line(220)], staves, front.merge([det("clef_G2", (20, 210, 30, 230))])) == []
+    assert front._one_line_staves([line(160)], staves, front.merge([clef(160)])) == []

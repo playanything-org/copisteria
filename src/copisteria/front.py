@@ -776,6 +776,39 @@ def _without_doubles(found: list, syms: list[Sym]) -> list:
     return out
 
 
+ONE_LINE_REACH = 1.0          # a percussion clef stands within this many staff spaces of the one line of its staff
+ONE_LINE_WIDTH = 0.6          # ... and that line runs at least this share of the width of the page's staves
+ONE_LINE_APART = 4.0          # ... and no nearer than this many staff spaces to another staff's lines
+
+
+def _one_line_staves(lines: list, staves: list[Staff], syms: list[Sym]) -> list[Staff]:
+    """One-line staves (unpitched percussion: a triangle, a tambourine, a bass drum): each line of the finder's that
+    belongs to no staff, runs as wide as the page's staves and has a percussion clef standing on it. The line finder
+    knows five-line staves only, and the detector's measure boxes on a single line are a few rows tall and unsure, so
+    such a staff was not there: its system read a staff short, and what stood on it went to the staff above or below
+    or was dropped. It is given a five-line staff's height about its line, the page's staff space, and its bars with
+    its system's (_segment)."""
+    if not staves:
+        return []
+    sps = sorted(st.sp for st in staves)
+    sp = sps[len(sps) // 2]
+    widths = sorted(st.x1 - st.x0 for st in staves)
+    width = widths[len(widths) // 2]
+    out: list[Staff] = []
+    for c in syms:
+        if c.cls != "clef_perc" or c.p < 0.5 or any(st.y0 - st.sp <= c.cy <= st.y1 + st.sp for st in staves):
+            continue                                  # none, or on a five-line staff (a drum kit's)
+        near = [ln for ln in lines if abs(ln.y - c.cy) <= ONE_LINE_REACH * sp and ln.x1 - ln.x0 >= ONE_LINE_WIDTH * width
+                and ln.x0 <= c.box[2] + 2 * sp]
+        if not near:
+            continue
+        line = min(near, key=lambda ln: abs(ln.y - c.cy))
+        if any(o.y0 - ONE_LINE_APART * sp < line.y < o.y1 + ONE_LINE_APART * sp for o in staves + out):
+            continue
+        out.append(Staff(bars=[], sp=sp, y0=line.y - 2 * sp, y1=line.y + 2 * sp, x0=float(line.x0), x1=float(line.x1)))
+    return out
+
+
 def _ink_staves_from(page, gray, syms: list[Sym]) -> list[Staff] | None:
     """Staves from the staff lines in ``page`` (vision.page.staves: five long thin runs at one spacing), each
     holding the detected measure boxes that sit on it. A row of measure boxes no ink staff explains (a staff the
@@ -818,6 +851,7 @@ def _ink_staves_from(page, gray, syms: list[Sym]) -> list[Staff] | None:
               sum(1 for n in notes if st.y0 - st.sp <= n.cy <= st.y1 + st.sp and st.x0 <= n.cx <= st.x1) >= 2]
     if not staves:
         return None
+    staves += _one_line_staves(m.lines, staves, syms)
     for st in staves:
         st.bars.sort(key=lambda i: syms[i].cx)
     staves.sort(key=lambda st: st.mid)
