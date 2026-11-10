@@ -20,6 +20,16 @@ Reading (what a page's MusicXML holds):
 - **A line with a percussion clef on it is a one-line staff** (`front.py` `_one_line_staves`). The finder knows
   five-line staves only, so a triangle's or a tambourine's staff was not there and its system read a staff short.
 
+What a caller may tell the front end (`front.py` `build`, `read.py` `read`; without it nothing changes):
+
+- **`layout`**: the staves of each of the page's systems, top to bottom, as the caller knows them from a reading of
+  the whole score at a glance (`_with_layout`). It groups the staves found into the counted systems, drops what is
+  hardly a staff where more were found (an inset ossia, a line of text), and takes a staff the finder saw and left
+  where fewer were. It is evidence, and may be wrong: it joins, it does not part staves the page joins; a join it
+  adds has to fit the page (bar lines that line up, a gap narrower than one it leaves between systems, a system
+  that keeps the bars its staves show); a staff that holds music is not dropped; `most` caps a system at the
+  score's staves. A layout that cannot be met is not used, and `Layout.prior` says what was done and why.
+
 What a caller may ask of the writer (`write.py` `write`; without these arguments the MusicXML is unchanged):
 
 - **`facts`**: a dict that is given what the writer decided and the MusicXML does not say: the part plan, each
