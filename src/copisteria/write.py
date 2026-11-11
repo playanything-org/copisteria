@@ -852,6 +852,12 @@ def _attach(rd: Reading, built: list, plans: list, texts: list, place: list, mas
                 inside[0].pre.append(("octave", (typ, size), shift < 0))
                 inside[-1].post.append(("octave", ("stop", size), shift < 0))
         elif c == "pedal":
+            # a pedal is under a keyboard's staves: what reads as one under a part of a single staff is something
+            # else (a voice's lyrics, syllable by syllable; a score for four voices and piano had 380 of them, none
+            # printed), and is not written
+            part = part_of.get(slot.get(s.staff))
+            if part is not None and len(plans[part].staves) < 2:
+                continue
             inside = [e for e in evs if s.box[0] - sp <= sym[e.si].cx <= s.box[2] + sp]
             if inside:
                 inside[0].pre.append(("pedal", "start", True))

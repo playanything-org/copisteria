@@ -257,6 +257,26 @@ def _tokens(L, clef=lambda s: "G2"):
     return tok
 
 
+def test_a_pedal_mark_is_written_under_a_keyboard_and_not_under_a_part_of_one_staff(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    xs = [0, 150, 300]
+    # a voice over a braced piano, a note on the voice's staff and one on the piano's lower staff, and under each of
+    # those staves something the detector calls a pedal mark: under the voice it is a syllable of its lyrics
+    rows = staff_row(100, xs) + staff_row(200, xs) + staff_row(280, xs)
+    marks = [det("pedal", (40, 146, 70, 160)), det("pedal", (40, 326, 70, 340))]
+    notes = [det("note_quarter", (50, 115, 60, 125), staff_position=0), det("note_quarter", (50, 295, 60, 305), staff_position=0)]
+    L = front.build(rows + [det("grpSym_brace", (0, 200, 8, 320))] + notes + marks, 400, 450)
+    assert [len(sy.staves) for sy in L.systems] == [3]
+    tok = _tokens(L)
+    for s in L.syms:
+        if s.fam == "pedal":
+            tok[s.i] = {"real": {"p": 1.0, "det": 1.0, "ev": 0}, "cls": {"v": "pedal"}}
+    assert sorted(L.staves[s.staff].pos for s in L.syms if s.fam == "pedal") == [0, 2]
+    root = ET.fromstring(write.write(_reading(L, tok)).split("\n", 2)[2])
+    assert [len(p.findall(".//pedal")) for p in root.findall("part")] == [0, 2]
+
+
 def test_a_keyboard_part_that_enters_late_declares_its_staves(monkeypatch):
     from copisteria import links
     monkeypatch.setattr(links, "load", lambda: None)

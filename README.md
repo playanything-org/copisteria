@@ -44,6 +44,10 @@ Reading (what a page's MusicXML holds):
   events of their own at one onset. Written in voices of their own they lost the beam, which went to the voice
   that held most of its notes. Notes that stand one over the other, at one time and of one length, now join the
   note they sound with as its chord; and where a beam's notes are still written in two voices, each is beamed.
+- **No pedal mark under a part of one staff** (`write.py` `_attach`). The detector calls a voice's lyrics pedal
+  marks, syllable by syllable: a score for four voices and piano, its text in Chinese, was written with 380 pedal
+  lines under its voices and none is printed. A pedal is under a keyboard's staves, so one is written only for a
+  part of two staves or more.
 
 What a caller may tell the front end (`front.py` `build`, `read.py` `read`; without it nothing changes):
 
