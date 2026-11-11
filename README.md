@@ -51,6 +51,13 @@ Reading (what a page's MusicXML holds):
   system (a part's eight lines read as eight instruments playing at once; 29 pages of one upload). A line now counts
   only where the page changes within a quarter of a staff space of it, back toward its paper or into darker ink,
   and where it does not go on past the page's first staff and past its last, as no system's line does.
+- **A staff the measure boxes make twice is one staff** (`front.py` `_clear_rows`). Where the line finder finds no
+  staves (a photograph taken by hand), the staves are the rows of the detector's measure boxes, and it boxes a
+  tilted or blurred staff's bars at two heights: two rows, one printed staff, and a system of three staves where two
+  are printed. No two staves of a page overlap, so of two that share more than a tenth of a staff's height one goes,
+  the one its boxes are less sure of, and its bars are the other's where that has none (two rows that each have
+  notes of their own along the same stretch of the page are two staves printed close, and stay). The same tenth now holds for the line finder's doubles (`_without_doubles`,
+  which asked for half).
 - **No pedal mark under a part of one staff** (`write.py` `_attach`). The detector calls a voice's lyrics pedal
   marks, syllable by syllable: a score for four voices and piano, its text in Chinese, was written with 380 pedal
   lines under its voices and none is printed. A pedal is under a keyboard's staves, so one is written only for a

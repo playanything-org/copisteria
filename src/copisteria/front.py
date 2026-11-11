@@ -182,8 +182,72 @@ def _staves(syms: list[Sym]) -> list[Staff]:
                    and st.y0 - 0.5 * st.sp <= s.cy <= st.y1 + 0.5 * st.sp)
         if held >= 3:
             staves.append(st)
-    staves.sort(key=lambda st: st.mid)
-    return staves
+    return _clear_rows(staves, syms)
+
+
+def _two_staves(a: Staff, b: Staff, syms: list[Sym]) -> bool:
+    """Whether two rows of measure boxes that overlap are two printed staves all the same: each has notes of its own.
+    The detector says where on its staff a note stands (staff_position); a note is a row's own where it stands there
+    to within a step and a half by that row's place, and not by the other's. Of one staff boxed twice, the notes
+    are one row's (or neither's); of two staves printed close, whose boxes reach into each other, each has its own,
+    one over the other: along the same stretch of the page. (A staff that bows or tilts across a photograph is boxed
+    higher at one end than the other, and each row has its own notes there too, side by side.) Where the notes do
+    not say (fewer than three a row), the rows are not shown to be two."""
+    own: list[list[float]] = [[], []]
+    low, high = min(a.y0, b.y0) - 2 * max(a.sp, b.sp), max(a.y1, b.y1) + 2 * max(a.sp, b.sp)
+    for s in syms:
+        if s.fam != "note" or s.p < 0.3 or not (min(a.x0, b.x0) <= s.cx <= max(a.x1, b.x1) and low <= s.cy <= high):
+            continue
+        try:
+            pos = int(s.attrs.get("staff_position"))
+        except (TypeError, ValueError):
+            continue
+        if abs(pos) >= 20 or float(s.attr_p.get("staff_position", 1.0)) < 0.5:
+            continue
+        off = [abs(((st.y0 + st.y1) / 2 - s.cy) / (st.sp / 2) - pos) for st in (a, b)]
+        for k in (0, 1):
+            if off[k] <= 1.5 < off[1 - k]:
+                own[k].append(s.cx)
+    if min(len(xs) for xs in own) < max(3, 0.25 * sum(len(xs) for xs in own)):
+        return False
+    over = min(max(own[0]), max(own[1])) - max(min(own[0]), min(own[1]))
+    return over >= 0.5 * min(max(xs) - min(xs) for xs in own)
+
+
+def _clear_rows(staves: list[Staff], syms: list[Sym]) -> list[Staff]:
+    """The staves the measure boxes make, without those that stand on another. No two staves of a page overlap, so
+    two that share more than DOUBLE_OVERLAP of the lower one's height are one printed staff read twice: on a
+    photograph the detector boxes the bars of a tilted or blurred staff at two heights, part of a staff's height
+    apart, and each set makes a row (_rows joins boxes that share half their height). The row its boxes are surer of
+    stays, then the one that holds more of the page's music, and takes the other's bars where it has none of its
+    own: they are that staff's bars, and what stands in them is found by their boxes (_band). Two rows each with
+    notes of its own are two staves printed close, boxed loosely, and both stay (_two_staves). A page read from its
+    staff lines has the same rule there (_without_doubles)."""
+    def weight(st: Staff) -> tuple[float, int]:
+        held = sum(1 for s in syms if s.fam in ("note", "rest", "clef") and s.p >= 0.3 and st.x0 <= s.cx <= st.x1
+                   and st.y0 - 0.5 * st.sp <= s.cy <= st.y1 + 0.5 * st.sp)
+        return sum(syms[i].p for i in st.bars), held
+
+    def shared(st: Staff, o: Staff) -> float:
+        return (min(st.y1, o.y1) - max(st.y0, o.y0)) / max(1.0, min(st.y1 - st.y0, o.y1 - o.y0))
+
+    kept: list[Staff] = []
+    for st in sorted(staves, key=weight, reverse=True):
+        # the staff it shares most with: a row between two staves is the nearer one's
+        on = max((o for o in kept if shared(st, o) > DOUBLE_OVERLAP), key=lambda o: shared(st, o), default=None)
+        if on is None or _two_staves(st, on, syms):
+            kept.append(st)
+            continue
+        bars = [syms[i] for i in on.bars]
+        for i in st.bars:
+            box = syms[i].box
+            if all(min(box[2], q.box[2]) - max(box[0], q.box[0]) <= 0.5 * min(box[2] - box[0], q.box[2] - q.box[0])
+                   for q in bars):
+                bars.append(syms[i])
+        bars.sort(key=lambda s: s.cx)
+        on.bars, on.x0, on.x1 = [s.i for s in bars], bars[0].box[0], bars[-1].box[2]
+    kept.sort(key=lambda st: st.mid)
+    return kept
 
 
 def _rows(bars: list[Sym]) -> list[Staff]:
@@ -804,7 +868,7 @@ def _staves_score(staves: list[Staff], syms: list[Sym]) -> float:
                                       st.x0 - st.sp <= b.cx <= st.x1 + st.sp for st in staves))
 
 
-DOUBLE_OVERLAP = 0.5          # two staves of the line finder sharing this much of the lower one's height are one staff
+DOUBLE_OVERLAP = 0.1          # two staves sharing more than this of the lower one's height are one staff found twice
 
 
 def _without_doubles(found: list, syms: list[Sym]) -> list:

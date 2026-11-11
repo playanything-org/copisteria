@@ -463,6 +463,49 @@ def test_a_pale_opening_line_joins_two_staves_and_a_white_gap_does_not():
     assert [len(sy.staves) for sy in edge.systems] == [1, 1]
 
 
+def test_a_staff_the_measure_boxes_make_twice_is_one_staff():
+    """On a photograph the detector boxes a staff's bars at two heights; each set is a row of its own, and the page
+    had a staff it does not print. Two staves that only stand close are two."""
+    xs = [0, 150, 300]
+    # one staff boxed twice, the second set 28 px lower (sharing 30% of its height) and less sure; a staff well below
+    twice = staff_row(100, xs) + [det("measure", (a, 128, b, 168), 0.5) for a, b in zip(xs, xs[1:])] + staff_row(300, xs)
+    notes = [det("note_quarter", (50, 115, 60, 125), staff_position=0), det("note_quarter", (50, 315, 60, 325), staff_position=0)]
+    L = front.build(twice + notes, 400, 450)
+    assert [(st.y0, st.y1, len(st.bars)) for st in L.staves] == [(100, 140, 2), (300, 340, 2)]
+    # one staff boxed at one height on the left and lower on the right: one staff of both bars, and the note in the
+    # right bar is that staff's
+    halves = [det("measure", (0, 100, 150, 140)), det("measure", (150, 125, 300, 165), 0.6)] + staff_row(300, xs)
+    L = front.build(halves + [det("note_quarter", (200, 140, 210, 150), staff_position=0)] + notes, 400, 450)
+    assert [(st.y0, st.y1, len(st.bars)) for st in L.staves] == [(100, 140, 2), (300, 340, 2)]
+    assert [s.staff for s in L.syms if s.fam == "note" and s.cx > 150] == [0]
+    # two staves a staff space apart (a tight two-staff part) are left alone, and so are two that touch
+    for top in (150, 141):
+        L = front.build(staff_row(100, xs) + staff_row(top, xs) + notes, 400, 450)
+        assert [(st.y0, st.y1) for st in L.staves] == [(100, 140), (top, top + 40)], top
+    # two staves printed a staff space apart and boxed loosely, so that the boxes share a ninth of their height: each
+    # has notes of its own, where the detector says they stand on their staff, and both stay
+    loose = [det("measure", (a, 92, b, 148)) for a, b in zip(xs, xs[1:])] + [det("measure", (a, 142, b, 198)) for a, b in zip(xs, xs[1:])]
+    own = [det("note_quarter", (x, 115, x + 10, 125), staff_position=0) for x in (30, 80, 180, 230)] + \
+          [det("note_quarter", (x, 165, x + 10, 175), staff_position=0) for x in (30, 80, 180, 230)]
+    L = front.build(loose + own, 400, 300)
+    assert [(st.y0, st.y1) for st in L.staves] == [(92, 148), (142, 198)]
+    assert [s.staff for s in L.syms if s.fam == "note"] == [0, 0, 0, 0, 1, 1, 1, 1]
+    # the same rows with each one's notes at its own end of the page are one staff that tilts: boxed higher on the
+    # left, lower on the right
+    tilt = [det("note_quarter", (x, 115, x + 10, 125), staff_position=0) for x in (20, 50, 80, 110)] + \
+           [det("note_quarter", (x, 165, x + 10, 175), staff_position=0) for x in (180, 210, 240, 270)]
+    assert len(front.build(loose + tilt, 400, 300).staves) == 1
+    # without notes that say so, such rows are one staff found twice
+    assert len(front.build(loose, 400, 300).staves) == 1
+    # a stray row between two staves is the one's it shares most with, though the other is the surer staff
+    upper = [det("measure", (0, 100, 300, 140), 0.6)]
+    lower = [det("measure", (0, 160, 225, 200)), det("measure", (225, 160, 450, 200))]
+    stray = [det("measure", (450, 125, 600, 165), 0.4)]
+    L = front.build(upper + lower + stray + [det("note_quarter", (505, 140, 515, 150), staff_position=0)], 700, 300)
+    assert [(st.y0, st.y1, len(st.bars)) for st in L.staves] == [(100, 140, 2), (160, 200, 2)]
+    assert [s.staff for s in L.syms if s.fam == "note"] == [0]
+
+
 def test_a_staff_the_line_finder_finds_twice_is_one_staff():
     """A bowed scan gives each staff line two runs of rows, and the finder a second staff half a space under the
     first: the one the measure boxes sit on stays, and a staff a space below another is left alone."""
