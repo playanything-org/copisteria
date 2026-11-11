@@ -476,6 +476,141 @@ def test_a_system_the_roster_fits_more_than_one_way_is_not_placed_by_a_guess(mon
     assert "more than one way" in why
 
 
+def _placed(L, tok, roster, **read_in_print):
+    """Whether each part sounds anywhere, why the roster was not used (None where it was), and the page as written."""
+    facts = {}
+    text = write.write(_reading(L, tok), roster=roster, facts=facts, **read_in_print)
+    root = ET.fromstring(text.split("\n", 2)[2])
+    return [any(m.find("note/pitch") is not None for m in p.findall("measure")) for p in root.findall("part")], facts["roster"], text
+
+
+def _choir_page():
+    """Two treble staves over a braced piano, each of the upper two with a note: a page of a score for four voices
+    and piano. Braces and clefs do not say which two voices sing."""
+    xs = [0, 150, 300]
+    rows = staff_row(100, xs) + staff_row(180, xs) + staff_row(260, xs) + staff_row(340, xs)
+    L = front.build(rows + [det("grpSym_brace", (0, 260, 8, 380)), det("note_quarter", (50, 115, 60, 125), staff_position=0),
+                            det("note_quarter", (50, 195, 60, 205), staff_position=0)], 400, 500)
+    assert [len(sy.staves) for sy in L.systems] == [4]
+    return L
+
+
+def test_a_staff_stands_only_at_an_instrument_the_caller_says_it_may_be(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    L, satb = _choir_page(), [1, 1, 1, 1, 2]
+    assert "more than one way" in _placed(L, _tokens(L), satb)[1]
+    # the caller read "T." and "B." by the upper staves: the tenor and the bass sing, the others rest
+    sounds, why, text = _placed(L, _tokens(L), satb, among=[[[2], [3], [4], None]])
+    assert why is None and sounds == [False, False, True, True, False]
+    # nothing the caller says is written: the parts are numbered as on any page
+    assert [n.text for n in ET.fromstring(text.split("\n", 2)[2]).iter("part-name")] == [f"Part {n}" for n in range(1, 6)]
+    assert _placed(L, _tokens(L), satb, among=[[[0], [1], None, None]])[:2] == ([True, True, False, False, False], None)
+    # one staff is enough where it leaves one fit: the staff over the alto's is no one's but the soprano's ...
+    assert _placed(L, _tokens(L), satb, among=[[None, [1], None, None]])[:2] == ([True, True, False, False, False], None)
+    # ... and is not where it leaves two (the staff under the soprano's is any of three)
+    assert "more than one way" in _placed(L, _tokens(L), satb, among=[[[0], None, None, None]])[1]
+    # a staff that may be either of two instruments is placed by the rest, or not at all
+    assert _placed(L, _tokens(L), satb, among=[[[0, 1], [3], None, None]])[1] == "a system of 4 staves fits the roster's 6 more than one way"
+    assert _placed(L, _tokens(L), satb, among=[[[1, 2], [2, 3], [4], [4]]])[1] == "a system of 4 staves fits the roster's 6 more than one way"
+    assert _placed(L, _tokens(L), satb, among=[[[2, 3], [2, 3], [4], [4]]])[:2] == ([False, False, True, True, False], None)
+    # staves that may stand nowhere in order (the bass above the soprano): not this roster's page, which keeps its own parts
+    sounds, why, _ = _placed(L, _tokens(L), satb, among=[[[3], [0], None, None]])
+    assert "nowhere" in why and len(sounds) == 3
+    # the piano's staves named as a voice: nowhere either
+    assert "nowhere" in _placed(L, _tokens(L), satb, among=[[None, None, [0], None]])[1]
+
+
+def test_what_the_caller_says_is_used_only_as_far_as_it_is_well_formed(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    L, satb = _choir_page(), [1, 1, 1, 1, 2]
+    good = [[[2], [3], [4], None]]
+    assert _placed(L, _tokens(L), satb, among=good)[1] is None
+    # not one entry for each staff of each system, an instrument the roster has not, an empty list, a number, a
+    # string, a truth value: the page is placed as without it (here: by nothing, so not at all), and nothing raises
+    for bad in ([[[2], [3], [4]]], [[[2], [3], [4], None], [[0]]], [[[2], [9], [4], None]], [[[2], [], [4], None]], [[2, 3, 4, None]],
+                [["2", [3], [4], None]], [[[True], [3], [4], None]], [[[2.0], [3], [4], None]], "among", [None], {}, 7):
+        assert "more than one way" in _placed(L, _tokens(L), satb, among=bad)[1], bad
+    for bad in (["G2"], "clefs", ["G2", "G2", "G2", "F4", "G2", 4], [None] * 6, ["nonsense"] * 6):
+        assert _placed(L, _tokens(L), satb, among=good, clefs=bad)[1] is None, bad
+
+
+def test_rows_that_do_not_fit_the_systems_found_are_not_used_at_all(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    xs, ys = [0, 150, 300], [0, 100, 200, 300]
+    # two systems of two treble staves each, of a score for soprano, alto and bass. The caller read three systems
+    # (soprano and alto; alto and bass; all three): the reader lost one, so the caller's second row has no system here,
+    # and its first is not known to be this page's first either
+    page = staff_row(100, xs) + staff_row(180, xs) + staff_row(500, ys) + staff_row(580, ys)
+    L = front.build(page + [det("note_quarter", (50, 115, 60, 125), staff_position=0)], 400, 700)
+    assert [len(sy.staves) for sy in L.systems] == [2, 2]
+    rows = [[[0], [1]], [[1], [2]]]
+    assert _placed(L, _tokens(L), [1, 1, 1], among=rows)[:2] == ([True, False, False], None)
+    for shifted in ([[[0], [1]], [[1], [2]], [[0], [1], [2]]], [[[0], [1]], [[0], [1], [2]]], [[[0], [1]]]):
+        assert "more than one way" in _placed(L, _tokens(L), [1, 1, 1], among=shifted)[1], shifted
+
+
+def test_a_whole_system_with_a_staff_that_may_not_be_its_instrument_is_not_the_rosters(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    xs, ys = [0, 150, 300], [0, 100, 200, 300]
+    brace = lambda top: det("grpSym_brace", (0, top, 8, top + 120))              # noqa: E731
+    # a voice over the braced piano, then the piano alone: by the roster two parts, the second system the piano's
+    page = staff_row(100, xs) + staff_row(180, xs) + staff_row(260, xs) + [brace(180)] + staff_row(500, ys) + staff_row(580, ys) + [brace(500)]
+    L = front.build(page + [det("note_quarter", (50, 115, 60, 125), staff_position=0)], 400, 700)
+    assert [len(sy.staves) for sy in L.systems] == [3, 2]
+    assert _placed(L, _tokens(L), [1, 2], among=[[[0], [1], None], [[1], None]])[:2] == ([True, False], None)
+    # the caller read a flute's label by the top staff, where the roster has the voice: another score's roster
+    sounds, why, _ = _placed(L, _tokens(L), [1, 2], among=[[[1], [1], None], [[1], None]])
+    assert "whole system" in why and len(sounds) == 2
+
+
+def test_the_clefs_read_in_print_stand_in_where_the_page_shows_no_whole_system(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    xs = [0, 150, 300]
+    # a soprano, a bass and a piano; this page shows one voice over the braced piano and no whole system, so the page
+    # itself cannot say which voice. The clefs read off the score's whole system can: the staff opens with a bass clef
+    rows = staff_row(100, xs) + staff_row(180, xs) + staff_row(260, xs)
+    L = front.build(rows + [det("grpSym_brace", (0, 180, 8, 300)), det("note_quarter", (50, 115, 60, 125), staff_position=0)], 400, 400)
+    low = (L.systems[0].staves[0], L.systems[0].staves[2])
+    bass = lambda s: "F4" if s.staff in low else "G2"                            # noqa: E731
+    assert "more than one way" in _placed(L, _tokens(L, clef=bass), [1, 1, 2])[1]
+    assert _placed(L, _tokens(L, clef=bass), [1, 1, 2], clefs=["G2", "F4", "G2", "F4"])[:2] == ([False, True, False], None)
+    # a clef with and without its octave mark is one clef: a treble staff is the soprano's as readily as the tenor's,
+    # read with the 8 or without, and only something else can say which
+    for read in ("G2", "G2_8b"):
+        tok = _tokens(L, clef=lambda s: "F4" if s.staff == low[1] else read)     # noqa: B023
+        assert "more than one way" in _placed(L, tok, [1, 1, 2], clefs=["G2", "G2_8b", "G2", "F4"])[1]
+        assert _placed(L, tok, [1, 1, 2], clefs=["G2", "G2_8b", "G2", "F4"], among=[[[1], None, None]])[:2] == ([False, True, False], None)
+        assert _placed(L, tok, [1, 1, 2], clefs=["F4", "G2_8b", "G2", "F4"])[:2] == ([False, True, False], None)
+    # an unknown clef, read or stated, says nothing
+    assert "more than one way" in _placed(L, _tokens(L, clef=bass), [1, 1, 2], clefs=["other", "other", "G2", "F4"])[1]
+    # a clef the caller left out is unknown, not another: a treble staff is as readily the instrument whose clef was
+    # left out as the one stated treble, where a bass staff is the first's before the second's
+    assert "more than one way" in _placed(L, _tokens(L), [1, 1, 2], clefs=[None, "G2", "G2", "F4"])[1]
+    assert _placed(L, _tokens(L, clef=bass), [1, 1, 2], clefs=[None, "G2", "G2", "F4"])[:2] == ([True, False, False], None)
+
+
+def test_the_pages_own_whole_systems_say_the_clefs_before_the_caller_does(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    xs, ys = [0, 150, 300], [0, 100, 200, 300]
+    brace = lambda top: det("grpSym_brace", (0, top, 8, top + 120))              # noqa: E731
+    # the page's whole system opens treble, bass, piano; the lone staff below with the piano opens with a bass clef
+    whole = staff_row(100, xs) + staff_row(180, xs) + staff_row(260, xs) + staff_row(340, xs)
+    below = staff_row(500, ys) + staff_row(580, ys) + staff_row(660, ys)
+    L = front.build(whole + [brace(260)] + below + [brace(580)] + [det("note_quarter", (50, 515, 60, 525), staff_position=0)], 400, 800)
+    assert [len(sy.staves) for sy in L.systems] == [4, 3]
+    low = [sy.staves[k] for sy, ks in zip(L.systems, ([1, 3], [0, 2])) for k in ks]
+    bass = lambda s: "F4" if s.staff in low else "G2"                            # noqa: E731
+    # stated clefs that contradict what this page shows (bass over treble) do not move the staff: the page says
+    assert _placed(L, _tokens(L, clef=bass), [1, 1, 2], clefs=["F4", "G2", "G2", "F4"])[:2] == ([False, True, False], None)
+    assert _placed(L, _tokens(L, clef=bass), [1, 1, 2])[:2] == ([False, True, False], None)
+
+
 def test_a_voice_never_holds_two_events_at_once():
     """A keyboard hand whose second chord the model places before the first has ended was written with a backup
     inside the voice; a reader that keeps one event at a time in a voice then drops what overlaps. The overlapping

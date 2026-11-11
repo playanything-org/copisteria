@@ -67,6 +67,17 @@ What a caller may ask of the writer (`write.py` `write`; without these arguments
   `facts["roster"]` says why. A system of fewer staves is placed among the roster's instruments by its braces and
   opening clefs alone: where they fit it more than one way (two treble staves that could be any two of four voices),
   the page is not explained, since a guess would give players' music to others and leave them empty.
+- **`clefs`, `among`** (`roster.py`): what the caller read in the score's print for that roster. `clefs` is the clef
+  each of the roster's staves opens with, used where the page shows no whole system of its own to read it from (a
+  clef with and without its octave mark is one clef there: a tenor's staff is read either way; a clef the caller left
+  out is unknown, and a staff may as well be that instrument's). `among` says, for each staff of each of the page's
+  systems, which of the roster's instruments it may be, as the label printed by the staff names them: "T." and "B."
+  over the piano are the tenor and the bass, where braces and clefs could not say which two of four voices sing.
+  Whose label a label is, is the caller's to decide; nothing here reads a name. A staff stands only at an instrument
+  it may be, a whole system one of whose staves may not be the instrument at its place is not this roster's page, and
+  for what remains the rule above holds: one fit, or the page is planned as without the roster. `among` is used whole
+  or not at all: a row that does not fit its system says the caller's systems are not the ones found. Nothing the
+  caller says is written as a part name.
 
 The read path:
 

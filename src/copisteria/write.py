@@ -1371,13 +1371,16 @@ def _part_names(rd: Reading, plans: list, texts: list, place: list) -> list[str 
 
 
 def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None, image=None,
-          facts: dict | None = None, align: bool = True, roster: list[int] | None = None) -> str:
+          facts: dict | None = None, align: bool = True, roster: list[int] | None = None,
+          clefs: list | None = None, among: list | None = None) -> str:
     """``image``: the page (PIL image or grey array), for what is read off the ink here (dashes after words).
     ``align``: False counts every system's staves into the parts from the top, whatever they say (as the writer
     did before _align_systems), for a caller that places a system's staves itself.
     ``roster``: the score's instruments as the caller knows them, top to bottom, each as its number of staves. On a
     page whose every system it explains the parts are the roster's (roster.plan), whatever ``align`` says; on any
     other page they are planned as without it. ``facts["roster"]`` says which: None where it was used, else why not.
+    ``clefs``, ``among``: what the caller read in the score's print for the roster (roster.plan): the clef each of its
+    staves opens with, and for each staff of each of the page's systems the roster's instruments it may be.
     ``facts``: a dict that is given what the writer decided and the MusicXML does not say, for a caller that wants
     more than the score: ``plans`` (each part's places in the fullest system), ``place`` (per system, place ->
     staff: _align_systems), ``columns`` ((system, column) of each measure), ``built`` (per part, per measure, its
@@ -1392,7 +1395,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
     unexplained = None
     if roster is not None:
         from . import roster as known
-        planned, unexplained = known.plan(rd, roster)
+        planned, unexplained = known.plan(rd, roster, clefs, among)
         if planned is not None:
             plans, place = planned
     root = ET.Element("score-partwise", version="4.0")
