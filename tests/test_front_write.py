@@ -389,6 +389,60 @@ def test_a_pale_one_pixel_line_is_evidence_a_grey_patch_is_not():
     assert front._pale_line(patch, 255, 0, a, b, 40) < 0.5
 
 
+def test_the_edge_of_a_bindings_shadow_is_not_a_pale_line_and_a_lines_pale_shoulder_is():
+    import numpy as np
+    levels = np.full((1200, 600), 255, np.uint8)
+    levels[40:60, 100:500] = 0                       # ink, so the page has a dark end
+    a = front.Staff(bars=[], sp=24.0, y0=300, y1=396, x0=24, x1=560)
+    b = front.Staff(bars=[], sp=24.0, y0=640, y1=736, x0=24, x1=560)
+    # a scan's binding shadow with its frame taken off: white up to x = 24, then the shadow's edge, fading to paper
+    # over a staff space, for the whole height of the page (the levels of a production scan)
+    shadow = levels.copy()
+    for k, tone in enumerate([219, 219, 221, 221, 222, 225, 225, 225, 228, 228, 231, 231, 233, 235, 237, 239, 241, 243, 245, 247, 249, 251, 253]):
+        shadow[:, 24 + k] = tone
+    assert front._pale_line(shadow, 255, 0, a, b, 24) < 0.5
+    # a steeper shadow passes for a line between two staves, and is known by where it goes on: past the page's first
+    # staff and past its last, where no system's opening line is
+    steep = levels.copy()
+    for k, tone in enumerate([212, 214, 218, 224, 232, 242, 250]):
+        steep[:, 24 + k] = tone
+    share, x = front._pale_at(steep, 255, 0, a, b, 24)
+    assert share > 0.9 and front._runs_on(steep, 255, 0, x, [a, b]) and front._pale_at(steep, 255, 0, a, b, 24, [a, b])[0] < 0.5
+    e = front.Staff(bars=[], sp=24.0, y0=300, y1=396, x0=40, x1=560)
+    g = front.Staff(bars=[], sp=24.0, y0=640, y1=736, x0=40, x1=560)
+    opening = levels.copy()
+    opening[300:737, 38] = 204                       # a system's own pale opening line ends with its staves
+    share, x = front._pale_at(opening, 255, 0, e, g, 40, [e, g])
+    assert share > 0.9 and not front._runs_on(opening, 255, 0, x, [e, g])
+    # where the page has no margin to look at past its staves, nothing is said and the line counts
+    low = front.Staff(bars=[], sp=24.0, y0=1090, y1=1186, x0=40, x1=560)
+    assert not front._runs_on(steep, 255, 0, x, [a, low])
+    # a shadow's edge in a scan's noise: the columns of its tail are a line in the gap on most rows and past the
+    # staves on fewer, and are the shadow's still
+    for seed in range(8):
+        noisy = np.full((1200, 600), 255.0)
+        noisy[40:60, 100:500] = 0
+        for k in range(12):
+            noisy[:, 24 + k] = 215 + 40 * k / 12
+        noisy[:, 24:60] += np.random.default_rng(seed).normal(0, 4, (1200, 36))
+        noisy = np.clip(noisy, 0, 255).astype(np.uint8)
+        assert front._pale_at(noisy, 255, 0, a, b, 24, [a, b])[0] < 0.85, seed
+    # a pale line on paper that is locally darker than the page's is a line still
+    dim = np.full((1200, 600), 250, np.uint8)
+    dim[40:60, 100:500] = 30
+    dim[:, :200] = 228
+    dim[300:737, 38] = 210
+    assert front._pale_line(dim, 250, 30, e, g, 40) > 0.9
+    # the opening line itself, dark, a few pixels past the columns searched, with its pale shoulder in them: on one
+    # side the paper, on the other the line
+    c = front.Staff(bars=[], sp=11.0, y0=300, y1=344, x0=392, x1=560)
+    d = front.Staff(bars=[], sp=11.0, y0=420, y1=464, x0=384, x1=560)
+    shoulder = levels.copy()
+    for k, tone in enumerate([242, 242, 236, 236, 236, 214, 213, 214, 145, 145, 232]):
+        shoulder[:, 391 + k] = tone
+    assert front._pale_line(shoulder, 255, 0, c, d, 384) > 0.9
+
+
 def test_a_pale_opening_line_joins_two_staves_and_a_white_gap_does_not():
     import numpy as np
     from PIL import Image
@@ -404,6 +458,9 @@ def test_a_pale_opening_line_joins_two_staves_and_a_white_gap_does_not():
     pale = front.build(dets, 620, 360, image=Image.fromarray(page))
     assert [len(sy.staves) for sy in white.systems] == [1, 1]
     assert [len(sy.staves) for sy in pale.systems] == [2]
+    page[:, 58] = 204                                # the same line for the page's whole height: the sheet's
+    edge = front.build(dets, 620, 360, image=Image.fromarray(page))
+    assert [len(sy.staves) for sy in edge.systems] == [1, 1]
 
 
 def test_a_staff_the_line_finder_finds_twice_is_one_staff():

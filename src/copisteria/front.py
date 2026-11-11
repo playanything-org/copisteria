@@ -495,27 +495,71 @@ def _ink_links(gray, syms: list[Sym], a: Staff, b: Staff, page_left: float) -> t
 
 
 PALE = 0.12                   # a pale line is at least this far from the paper toward the ink (_pale_line)
+PALE_BACK = 0.5               # and beside it the page is this much of its depth nearer its paper, or as much darker
 
 
 def _pale_line(levels, paper: float, dark: float, a: Staff, b: Staff, page_left: float) -> float:
-    """Share of the gap between two staves that a pale vertical line crosses where a system opens (_left_span, up
-    to the staves' line starts). On a small render the opening line is one anti-aliased pixel, grey 200-210 on
-    white, which the ink mask does not count; only a line counts here, with paper a staff space to either side, so
-    a grey patch (a stamp, its edge, a shadow) is not one. ``paper``, ``dark``: the page's median and 1st-percentile
-    levels. After issue #1's suggested _faint_line."""
+    """Share of the gap between two staves that a pale vertical line crosses where a system opens (_pale_at)."""
+    return _pale_at(levels, paper, dark, a, b, page_left)[0]
+
+
+def _pale_at(levels, paper: float, dark: float, a: Staff, b: Staff, page_left: float,
+             staves: list[Staff] | None = None) -> tuple[float, int]:
+    """(share, x): the share of the gap between two staves that a pale vertical line crosses where a system opens
+    (_left_span, up to the staves' line starts), and the line's column. ``staves``: the page's, where a line that
+    goes on past all of them is not to count (_runs_on). On a small render the opening line is one
+    anti-aliased pixel, grey 200-210 on white, which the ink mask does not count; only a line counts here, with
+    paper a staff space to either side and the page changing within a quarter of one, so a grey patch (a stamp, its
+    edge, a shadow, a shadow's edge) is not one. ``paper``, ``dark``: the page's median and 1st-percentile levels.
+    After issue #1's suggested _faint_line."""
     H, W = levels.shape
     ya, yb = max(0, int(round(a.y1 + 1))), min(H, int(round(b.y0 - 1)))
     if yb - ya < 2:
-        return 0.0
+        return 0.0, -1
     lo, hi = _left_span(a, b, page_left, lines=True)
     pale = levels[ya:yb] < paper - PALE * max(1.0, paper - dark)
     away = max(3, int(round((a.sp + b.sp) / 2)))
-    best = 0.0
+    # a line is narrow: within a quarter of a staff space to either side the page is half way back to the paper it
+    # has a staff space away (the lighter side's: a shaded sheet is darker than the page's paper on both, a shadow's
+    # edge on one), or runs into darker ink (the line itself, where this is its pale shoulder; a bracket beside it).
+    # Beside a shadow's edge the page stays as pale as the edge, neither paper nor ink
+    near = max(2, int(round(away / 4)))
+    tone = levels[ya:yb].mean(axis=0)
+    best, at = 0.0, -1
     for x in range(max(away + 1, lo), min(W - away - 1, hi) + 1):
         run = float(pale[:, x - 1:x + 2].any(axis=1).mean())
         if run > best and all(float(pale[:, c - 1:c + 1].any(axis=1).mean()) < 0.5 for c in (x - away, x + away)):
-            best = run
-    return best
+            core = float(tone[x - 1:x + 2].min())
+            step = PALE_BACK * (min(paper, max(float(tone[x - away]), float(tone[x + away]))) - core)
+            sides = (tone[x - near - 2:x - 1], tone[x + 2:x + near + 3])
+            if step > 0 and all(float(side.max()) >= core + step or float(side.min()) <= core - step for side in sides) \
+                    and not (staves and _runs_on(levels, paper, dark, x, staves)):
+                best, at = run, x
+    return best, at
+
+
+RUNS_ON = (1.5, 4.0)          # staff spaces past the page's outer staves where a system's opening line is not (_runs_on)
+RUNS_ON_SHARE = 0.5           # of those rows pale: a line that is the page's. A system's own line has none of them
+
+
+def _runs_on(levels, paper: float, dark: float, x: int, staves: list[Staff]) -> bool:
+    """Whether the pale line at column x goes on past the page's first staff and past its last: a system's opening
+    line ends with its system (a bracket's hook reaches a staff space further), so a line that is there above every
+    staff of the page and below every staff is the page's, not a system's -- the edge of a binding's shadow, of the
+    sheet, of a frame taken off (unframe), which is pale for the page's whole height. A page whose staves leave no
+    margin to look at on a side says nothing there, and then nothing is said."""
+    H, W = levels.shape
+    top, bottom = min(staves, key=lambda st: st.y0), max(staves, key=lambda st: st.y1)
+    near, far = RUNS_ON
+    bands = ((int(round(top.y0 - far * top.sp)), int(round(top.y0 - near * top.sp))),
+             (int(round(bottom.y1 + near * bottom.sp)), int(round(bottom.y1 + far * bottom.sp))))
+    limit = paper - PALE * max(1.0, paper - dark)
+    for y0, y1 in bands:
+        if y0 < 0 or y1 > H or y1 - y0 < 2:
+            return False
+        if float((levels[y0:y1, max(0, x - 1):x + 2] < limit).any(axis=1).mean()) < RUNS_ON_SHARE:
+            return False
+    return True
 
 
 def _opening_line(mask, a: Staff, b: Staff, page_left: float) -> float:
@@ -563,7 +607,7 @@ def _links(syms: list[Sym], staves: list[Staff], gray=None, levels=None) -> tupl
                 line = _opening_line(gray, a, b, page_left)
                 if line < INK_LINK and levels is not None:
                     tone = tone or [float(np.percentile(levels, 50)), float(np.percentile(levels, 1))]
-                    line = max(line, _pale_line(levels, *tone, a, b, page_left))
+                    line = max(line, _pale_at(levels, *tone, a, b, page_left, staves)[0])
             if left >= INK_LINK or line >= INK_LINK or bars >= 0.5:
                 decided[k - 1], said[k - 1] = True, "line"
             elif left < INK_SPLIT and bars < 0.1:

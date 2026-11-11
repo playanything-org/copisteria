@@ -44,6 +44,13 @@ Reading (what a page's MusicXML holds):
   events of their own at one onset. Written in voices of their own they lost the beam, which went to the voice
   that held most of its notes. Notes that stand one over the other, at one time and of one length, now join the
   note they sound with as its chord; and where a beam's notes are still written in two voices, each is beamed.
+- **The edge of a binding's shadow is not a system's pale opening line** (`front.py` `_pale_at`, `_runs_on`).
+  Upstream's pale-line finder (for a small render, whose opening line is one grey pixel the ink mask does not count)
+  took the edge of a scan's binding shadow for one: with the frame taken off, the shadow's edge is pale for the
+  page's whole height, with paper a staff space to either side, and every staff of the page was joined into one
+  system (a part's eight lines read as eight instruments playing at once; 29 pages of one upload). A line now counts
+  only where the page changes within a quarter of a staff space of it, back toward its paper or into darker ink,
+  and where it does not go on past the page's first staff and past its last, as no system's line does.
 - **No pedal mark under a part of one staff** (`write.py` `_attach`). The detector calls a voice's lyrics pedal
   marks, syllable by syllable: a score for four voices and piano, its text in Chinese, was written with 380 pedal
   lines under its voices and none is printed. A pedal is under a keyboard's staves, so one is written only for a
