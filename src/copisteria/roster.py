@@ -24,7 +24,8 @@ systems, the roster's instruments it may be, as the label printed by the staff n
 piano are the tenor and the bass, where braces and clefs could not say which two of four voices sing). Whose label a
 label is, is the caller's to decide: this module knows no names. A staff stands only at an instrument it may be, a
 whole system one of whose staves may not be the instrument at its place is not this roster's, and the rule above
-stands for what remains: one fit, or none.
+stands for what remains: one fit, or none. What it says of the staves is of the systems it saw: where those are not
+the systems found here (another number of them, or of staves in one), nothing it sent explains the page.
 """
 from __future__ import annotations
 
@@ -50,9 +51,9 @@ def plan(rd: Reading, counts: list[int], clefs: list | None = None,
     """((plans, place), None) for a page the roster explains: the roster's parts, and per system place -> staff
     as write._align_systems gives it; else (None, why not). ``clefs``: per staff of the roster its opening clef
     (write.MID_LINE's names), or None. ``among``: per system of the page, top to bottom, per staff the indices of the
-    roster's instruments it may be, or None for any. Each is used as far as it is well formed and fits what was found
-    (a system's ``among`` only where it has a row for each system and an entry for each staff of each: one row that does not
-    fit means the caller's systems are not these, and none is used)."""
+    roster's instruments it may be, or None for any. ``clefs`` is used as far as it is well formed. ``among`` has a
+    row for each system and an entry for each staff of each, or the caller's systems are not these and the page is not
+    explained."""
     from . import write as W
     L = rd.layout
     if not L.systems:
@@ -72,14 +73,17 @@ def plan(rd: Reading, counts: list[int], clefs: list | None = None,
     stated = [x if isinstance(x, str) and x in W.MID_LINE else None for x in clefs] \
         if isinstance(clefs, list) and len(clefs) == K else [None] * K
     index = lambda x: isinstance(x, int) and not isinstance(x, bool) and 0 <= x < len(counts)      # noqa: E731
-    # per system, per staff: its instruments, or None. All of it or none: a row that does not fit its system (another
-    # number of staves) says the caller's systems are not the ones found here, and then no row is known to be its
-    # system's
+    # per system, per staff: its instruments, or None. A caller that says it at all read the page's systems, and a
+    # row that does not fit its system (another number of staves, or of systems) says they are not the ones found
+    # here: then what it read is of other systems, the roster it sent with it too, and the page is not explained (a
+    # part's page read as one system of seven staves stood on seven of the roster's instruments, by the clefs alone)
     may: list = [None] * len(L.systems)
-    if isinstance(among, list) and len(among) == len(L.systems) and all(
-            isinstance(row, list) and len(row) == len(sy.staves) and
-            all(x is None or isinstance(x, list) and x and all(index(y) for y in x) for x in row)
-            for row, sy in zip(among, L.systems)):
+    if among is not None:
+        if not (isinstance(among, list) and len(among) == len(L.systems) and all(
+                isinstance(row, list) and len(row) == len(sy.staves) and
+                all(x is None or isinstance(x, list) and x and all(index(y) for y in x) for x in row)
+                for row, sy in zip(among, L.systems))):
+            return None, "the caller's systems are not the ones found"
         may = [[None if x is None else frozenset(x) for x in row] for row in among]
 
     def allowed(n: int, i: int, p: int) -> bool:

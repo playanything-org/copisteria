@@ -75,9 +75,10 @@ What a caller may ask of the writer (`write.py` `write`; without these arguments
   over the piano are the tenor and the bass, where braces and clefs could not say which two of four voices sing.
   Whose label a label is, is the caller's to decide; nothing here reads a name. A staff stands only at an instrument
   it may be, a whole system one of whose staves may not be the instrument at its place is not this roster's page, and
-  for what remains the rule above holds: one fit, or the page is planned as without the roster. `among` is used whole
-  or not at all: a row that does not fit its system says the caller's systems are not the ones found. Nothing the
-  caller says is written as a part name.
+  for what remains the rule above holds: one fit, or the page is planned as without the roster. A row of `among` that
+  does not fit its system says the caller's systems are not the ones found: the page is then planned as without the
+  roster, since the roster came with what was read of other systems. Nothing the caller says is written as a part
+  name.
 
 The read path:
 

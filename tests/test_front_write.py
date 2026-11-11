@@ -528,15 +528,16 @@ def test_what_the_caller_says_is_used_only_as_far_as_it_is_well_formed(monkeypat
     good = [[[2], [3], [4], None]]
     assert _placed(L, _tokens(L), satb, among=good)[1] is None
     # not one entry for each staff of each system, an instrument the roster has not, an empty list, a number, a
-    # string, a truth value: the page is placed as without it (here: by nothing, so not at all), and nothing raises
+    # string, a truth value: what the caller read is not of these systems, the page is not explained, and nothing
+    # raises
     for bad in ([[[2], [3], [4]]], [[[2], [3], [4], None], [[0]]], [[[2], [9], [4], None]], [[[2], [], [4], None]], [[2, 3, 4, None]],
                 [["2", [3], [4], None]], [[[True], [3], [4], None]], [[[2.0], [3], [4], None]], "among", [None], {}, 7):
-        assert "more than one way" in _placed(L, _tokens(L), satb, among=bad)[1], bad
+        assert _placed(L, _tokens(L), satb, among=bad)[1] == "the caller's systems are not the ones found", bad
     for bad in (["G2"], "clefs", ["G2", "G2", "G2", "F4", "G2", 4], [None] * 6, ["nonsense"] * 6):
         assert _placed(L, _tokens(L), satb, among=good, clefs=bad)[1] is None, bad
 
 
-def test_rows_that_do_not_fit_the_systems_found_are_not_used_at_all(monkeypatch):
+def test_rows_that_do_not_fit_the_systems_found_leave_the_page_unexplained(monkeypatch):
     from copisteria import links
     monkeypatch.setattr(links, "load", lambda: None)
     xs, ys = [0, 150, 300], [0, 100, 200, 300]
@@ -549,7 +550,22 @@ def test_rows_that_do_not_fit_the_systems_found_are_not_used_at_all(monkeypatch)
     rows = [[[0], [1]], [[1], [2]]]
     assert _placed(L, _tokens(L), [1, 1, 1], among=rows)[:2] == ([True, False, False], None)
     for shifted in ([[[0], [1]], [[1], [2]], [[0], [1], [2]]], [[[0], [1]], [[0], [1], [2]]], [[[0], [1]]]):
-        assert "more than one way" in _placed(L, _tokens(L), [1, 1, 1], among=shifted)[1], shifted
+        assert _placed(L, _tokens(L), [1, 1, 1], among=shifted)[1] == "the caller's systems are not the ones found", shifted
+
+
+def test_a_page_read_as_one_system_where_the_caller_saw_several_does_not_take_the_roster(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    xs = [0, 150, 300]
+    # a part's page: three lines of one bass-clef staff each, which the reader joined into one system of three staves.
+    # The roster (two treble staves, three bass staves) would hold them one way by the clefs alone, as its three bass
+    # instruments at once; the caller saw three systems of one staff, so nothing it sent is of this system
+    page = staff_row(100, xs) + staff_row(180, xs) + staff_row(260, xs)
+    L = front.build(page + [det("note_quarter", (50, 115, 60, 125), staff_position=0)], 400, 400)
+    assert [len(sy.staves) for sy in L.systems] == [3]
+    tok, clefs = _tokens(L, clef=lambda s: "F4"), ["G2", "G2", "F4", "F4", "F4"]
+    assert _placed(L, tok, [1, 1, 1, 1, 1], clefs=clefs)[:2] == ([False, False, True, False, False], None)
+    assert _placed(L, tok, [1, 1, 1, 1, 1], clefs=clefs, among=[[None], [None], [None]])[1] == "the caller's systems are not the ones found"
 
 
 def test_a_whole_system_with_a_staff_that_may_not_be_its_instrument_is_not_the_rosters(monkeypatch):
