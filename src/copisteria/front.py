@@ -577,6 +577,7 @@ MEETS_WIDE = 1.5              # a stroke at most this many staff spaces wide acr
 MEETS_ROW = 0.5               # a row is a staff line's where it is ink over this share of those columns
 MEETS_LINES = 3               # a staff (of five lines) shows this many of its lines there; a one-line staff its one
 MEETS_OFF = 2.0               # staff spaces a staff's lines may lie off its box at the page's left (a tilted page)
+MEETS_INK = 0.05              # or, where the mask does not part its lines, a staff's column holds this share of ink
 
 
 def _line_rows(mask, r0: int, r1: int, c0: int, c1: int) -> int:
@@ -596,21 +597,19 @@ def _meets_staves(mask, x: int, a: Staff, b: Staff) -> bool:
     H, W = mask.shape
     sp = (a.sp + b.sp) / 2
     y0, y1 = a.y1 + 1, b.y0 - 1
-    inked = lambda c: _ink_run(mask, c, y0, y1, reach=0) >= 0.5                    # noqa: E731
+    inked = lambda c: _ink_run(mask, c, y0, y1, reach=0) >= 0.25                   # noqa: E731
     # x was found with a reach of two columns: the stroke is the run of inked columns nearest it
     near = [c for c in range(max(0, x - 2), min(W, x + 3)) if inked(c)]
-    if near:
-        left = right = near[0]
-        while left > 0 and inked(left - 1):
-            left -= 1
-            if right - left + 1 > MEETS_WIDE * sp:
-                return False                          # a dark band (the background past the sheet), not a stroke
-        while right + 1 < W and inked(right + 1):
-            right += 1
-            if right - left + 1 > MEETS_WIDE * sp:
-                return False
-    else:
-        right = min(W - 1, x + 2)
+    left = right = near[0] if near else min(W - 1, x + 2)
+    while near and left > 0 and inked(left - 1):
+        left -= 1
+        if right - left + 1 > MEETS_WIDE * sp:
+            return False                              # a dark band (the background past the sheet), not a stroke
+    # (a stroke's ragged edge, where no column is ink across most of the gap, is followed into the stroke too)
+    while right + 1 < W and inked(right + 1):
+        right += 1
+        if right - left + 1 > MEETS_WIDE * sp:
+            return False
     c0, c1 = right + 1, min(W, int(round(right + 1 + MEETS_REACH * sp)))
     if c1 - c0 < 2:
         return False
@@ -619,7 +618,10 @@ def _meets_staves(mask, x: int, a: Staff, b: Staff) -> bool:
         # space or two off its box; a one-line staff's rows are two staff spaces either side of its line
         reach = (0.5 if st.one_line else 2.0) * st.sp + (0.0 if st.line_x0 is not None else MEETS_OFF * st.sp)
         r0, r1 = max(0, int(round(st.mid - reach))), min(H, int(round(st.mid + reach)) + 1)
-        if _line_rows(mask, r0, r1, c0, c1) < (1 if st.one_line else MEETS_LINES):
+        if _line_rows(mask, r0, r1, c0, c1) >= (1 if st.one_line else MEETS_LINES):
+            continue
+        # a faded or grey scan's mask does not part a staff's lines: there the staff is ink across most columns
+        if float((mask[r0:r1, c0:c1].mean(axis=0) >= MEETS_INK).mean()) < 0.5:
             return False
     return True
 

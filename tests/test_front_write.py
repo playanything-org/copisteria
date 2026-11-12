@@ -1285,6 +1285,18 @@ def test_a_dark_band_in_the_margin_is_not_a_systems_opening_line_and_a_line_its_
             words[y:y + 3, 66:72] = True
             words[y:y + 3, 76:80] = True
     assert front._ink_links(words, [], a, b, left)[0] <= front.INK_SPLIT
+    # a band whose edge is ragged, the search landing on a column of the edge where little of the gap is ink
+    ragged = page.copy()
+    ragged[:, 40:62] = True
+    ragged[::3, 62:65] = True
+    assert front._ink_links(ragged, [], a, b, left)[0] <= front.INK_SPLIT
+    # a faded grey scan whose mask does not part a staff's lines, the staff a band of speckle: its line counts
+    grey = np.zeros((500, 640), bool)
+    rng = np.random.default_rng(0)
+    for top in (100, 300):
+        grey[top - 5:top + 45, 120:600] = rng.random((50, 480)) < 0.4
+    grey[100:341, 118:121] = True
+    assert front._ink_links(grey, [], a, b, left)[0] > front.INK_LINK
     # one-line percussion staves, their lines one pixel thick, joined by their opening line
     c = front.Staff(bars=[], sp=sp, y0=100, y1=140, x0=120, x1=600, one_line=True)
     d = front.Staff(bars=[], sp=sp, y0=300, y1=340, x0=120, x1=600, one_line=True)

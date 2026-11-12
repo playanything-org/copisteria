@@ -66,7 +66,7 @@ Reading (what a page's MusicXML holds):
   line up: one tenor drum part of six one-staff systems was delivered as four drum parts. Ink across a gap now
   counts as the line only where it is a stroke no wider than a brace and, within three staff spaces past it, each
   of the two staves shows its lines running on (three of them, or a one-line staff's one, a staff space or two off
-  its measure boxes on a tilted page). An opening line, a bracket or a brace stands where its staves start. Where
+  its measure boxes on a tilted page; on a faded scan whose lines the mask does not part, ink across most of it). An opening line, a bracket or a brace stands where its staves start. Where
   the only ink there is not such a stroke, the gap is white, unless the detector saw a brace or bracket over both
   staves.
 - **A multi-bar rest outside every bar box is a bar the detector missed** (`front.py` `_fill_gaps`, `LOOSE`). On a
