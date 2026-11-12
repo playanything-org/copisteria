@@ -297,13 +297,18 @@ def _rows(bars: list[Sym]) -> list[Staff]:
     return staves
 
 
+LOOSE = ("note", "rest", "multiRest")    # what a bar holds: outside every bar box, a bar the detector missed
+
+
 def _fill_gaps(syms: list[Sym], staves: list[Staff]) -> None:
-    """Stretches of a staff with notes or rests outside every bar box are bars the detector missed: a gap between
-    two bars, or the run before the first / after the last. Detected bar lines inside a stretch split it."""
+    """Stretches of a staff with notes, rests or a multi-bar rest outside every bar box are bars the detector missed:
+    a gap between two bars, or the run before the first / after the last. Detected bar lines inside a stretch split
+    it. A part's opening multi-bar rest, boxed only faintly, was otherwise no bar: the staff began after it, without
+    its clef, and its rests were not counted."""
     _assign(syms, staves)
     for k, st in enumerate(staves):
         boxes = [syms[i].box for i in st.bars]
-        loose = [s for s in syms if s.staff == k and s.fam in ("note", "rest") and s.p >= 0.25 and
+        loose = [s for s in syms if s.staff == k and s.fam in LOOSE and s.p >= 0.25 and
                  not any(b[0] - 0.5 * st.sp <= s.cx <= b[2] + 0.5 * st.sp for b in boxes)]
         if not loose:
             continue

@@ -69,6 +69,11 @@ Reading (what a page's MusicXML holds):
   its measure boxes on a tilted page). An opening line, a bracket or a brace stands where its staves start. Where
   the only ink there is not such a stroke, the gap is white, unless the detector saw a brace or bracket over both
   staves.
+- **A multi-bar rest outside every bar box is a bar the detector missed** (`front.py` `_fill_gaps`, `LOOSE`). On a
+  page whose staves are the rows of the detector's measure boxes, a stretch of a staff with notes or rests outside
+  every box became a bar of its own, and a multi-bar rest did not. A part's opening multi-bar rest, boxed only
+  faintly, was then no bar: the staff began after it, without its clef (a percussion part read as treble), and its
+  bars were not counted.
 - **No pedal mark under a part of one staff** (`write.py` `_attach`). The detector calls a voice's lyrics pedal
   marks, syllable by syllable: a score for four voices and piano, its text in Chinese, was written with 380 pedal
   lines under its voices and none is printed. A pedal is under a keyboard's staves, so one is written only for a

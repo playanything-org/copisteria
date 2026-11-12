@@ -1317,3 +1317,13 @@ def test_staves_with_bar_lines_of_their_own_and_a_band_beside_them_are_systems_o
     line[96:545, 106:111] = 0
     assert [len(sy.staves) for sy in front.build(dets, 640, 700, image=Image.fromarray(line)).systems] == [3]
 
+
+def test_a_multi_bar_rest_outside_every_bar_box_is_a_bar_the_detector_missed():
+    # a part's opening multi-bar rest, which the detector boxed only faintly: the staff started at its first box,
+    # without its clef, and the rest was no bar (another staff of the page starts where the music does)
+    dets = staff_row(100, [300, 450, 600]) + staff_row(300, [60, 330, 600]) + \
+        [det("multiRest", (140, 112, 280, 128), conf=0.85), det("clef_perc", (64, 110, 84, 130))]
+    st = front.build(dets, 640, 400).staves[0]
+    assert len(st.bars) == 3
+    first = [s for s in front.build(dets, 640, 400).syms if s.fam == "measure" and s.synthetic and s.box[1] < 200]
+    assert len(first) == 1 and first[0].box[0] < 140 and first[0].box[2] <= 300
