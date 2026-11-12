@@ -58,6 +58,17 @@ Reading (what a page's MusicXML holds):
   the one its boxes are less sure of, and its bars are the other's where that has none (two rows that each have
   notes of their own along the same stretch of the page are two staves printed close, and stay). The same tenth now holds for the line finder's doubles (`_without_doubles`,
   which asked for half).
+- **Ink across a gap opens a system only where its staves' lines begin at it** (`front.py` `_meets_staves`,
+  `_ink_links`). The search for the line that opens a system reaches three staff spaces left of the page's leftmost
+  staff, and took any ink across a gap there for that line. In a photograph taken by hand, the edge of the binder
+  or folder the sheet lies in, or of the sheet itself, runs down that margin past every gap. It joined every staff
+  of a one-instrument part into one system, and the "line" it was taken for overrode the bar lines, which did not
+  line up: one tenor drum part of six one-staff systems was delivered as four drum parts. Ink across a gap now
+  counts as the line only where it is a stroke no wider than a brace and, within three staff spaces past it, each
+  of the two staves shows its lines running on (three of them, or a one-line staff's one, a staff space or two off
+  its measure boxes on a tilted page). An opening line, a bracket or a brace stands where its staves start. Where
+  the only ink there is not such a stroke, the gap is white, unless the detector saw a brace or bracket over both
+  staves.
 - **No pedal mark under a part of one staff** (`write.py` `_attach`). The detector calls a voice's lyrics pedal
   marks, syllable by syllable: a score for four voices and piano, its text in Chinese, was written with 380 pedal
   lines under its voices and none is printed. A pedal is under a keyboard's staves, so one is written only for a

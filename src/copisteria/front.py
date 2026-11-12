@@ -545,18 +545,78 @@ def _left_span(a: Staff, b: Staff, page_left: float, lines: bool = False) -> tup
     return int(min(page_left, a.x0, b.x0) - 3 * sp), int(min(start(a), start(b)) + sp)
 
 
-def _ink_links(gray, syms: list[Sym], a: Staff, b: Staff, page_left: float) -> tuple[float, float]:
-    """(left, bars): how much of the gap between two staves a vertical ink run crosses at their left end (the
+def _ink_links(gray, syms: list[Sym], a: Staff, b: Staff, page_left: float) -> tuple[float, float, float]:
+    """(left, bars, margin): how much of the gap between two staves a vertical ink run crosses at their left end (the
     system's opening line, brace or bracket -- the measure boxes start after the clef, so from the page's leftmost
-    staff start on), and the share of a's detected bar lines whose ink runs on into b."""
+    staff start on), the share of a's detected bar lines whose ink runs on into b, and how much of the gap ink crosses
+    there that is no such stroke (_meets_staves): the edge of a binder, a folder or the sheet, a band of shadow."""
     sp = (a.sp + b.sp) / 2
     y0, y1 = a.y1 + 1, b.y0 - 1
     lo, hi = _left_span(a, b, page_left)
-    left = max((_ink_run(gray, x, y0, y1) for x in range(max(0, lo), hi + 1, 2)), default=0.0)
+    left = margin = 0.0
+    for x in range(max(0, lo), hi + 1, 2):
+        run = _ink_run(gray, x, y0, y1)
+        # a run that would say something (INK_SPLIT and up) counts only where the staves' lines begin at it
+        if run < INK_SPLIT or run <= left or _meets_staves(gray, x, a, b):
+            left = max(left, run)
+        else:
+            margin = max(margin, run)
     lines = [s for s in syms if s.fam == "barLine" and s.p >= 0.5 and s.staff < 0 and
              a.y0 - sp <= s.cy <= a.y1 + sp and max(a.x0, b.x0) <= s.cx <= min(a.x1, b.x1)]
     bars = (sum(_ink_run(gray, s.cx, y0, y1) >= INK_LINK for s in lines) / len(lines)) if lines else 0.0
-    return left, bars
+    return left, bars, margin
+
+
+MEETS_REACH = 3.0             # staff spaces past a stroke within which its staves' lines begin, if it opens their system
+MEETS_WIDE = 1.5              # a stroke at most this many staff spaces wide across the gap (a brace's, a bracket's)
+MEETS_ROW = 0.5               # a row is a staff line's where it is ink over this share of those columns
+MEETS_LINES = 3               # a staff (of five lines) shows this many of its lines there; a one-line staff its one
+MEETS_OFF = 2.0               # staff spaces a staff's lines may lie off its box at the page's left (a tilted page)
+
+
+def _line_rows(mask, r0: int, r1: int, c0: int, c1: int) -> int:
+    """How many separate horizontal lines cross columns c0..c1 between rows r0 and r1: runs of rows that hold ink over
+    MEETS_ROW of those columns. Words, a clef, a band of ink across them make few such rows, or one run of them."""
+    rows = mask[r0:r1, c0:c1].mean(axis=1) >= MEETS_ROW
+    return int(rows[0]) + int((rows[1:] & ~rows[:-1]).sum()) if len(rows) else 0
+
+
+def _meets_staves(mask, x: int, a: Staff, b: Staff) -> bool:
+    """Whether the vertical ink at column x, between staves a and b, is a stroke their lines begin at: no wider than
+    a brace (MEETS_WIDE), and within MEETS_REACH staff spaces past it each staff's lines run on to the right. A
+    system's opening line, bracket or brace stands at its staves' start; the edge of the sheet, of a binder or a
+    folder the page lies in, or a shadow stands in the margin, as a dark band or with paper between it and the
+    staves, and in a photograph taken by hand it runs past every gap of the page. Taken for a system's line it
+    joined every staff of a part into one system of many staves."""
+    H, W = mask.shape
+    sp = (a.sp + b.sp) / 2
+    y0, y1 = a.y1 + 1, b.y0 - 1
+    inked = lambda c: _ink_run(mask, c, y0, y1, reach=0) >= 0.5                    # noqa: E731
+    # x was found with a reach of two columns: the stroke is the run of inked columns nearest it
+    near = [c for c in range(max(0, x - 2), min(W, x + 3)) if inked(c)]
+    if near:
+        left = right = near[0]
+        while left > 0 and inked(left - 1):
+            left -= 1
+            if right - left + 1 > MEETS_WIDE * sp:
+                return False                          # a dark band (the background past the sheet), not a stroke
+        while right + 1 < W and inked(right + 1):
+            right += 1
+            if right - left + 1 > MEETS_WIDE * sp:
+                return False
+    else:
+        right = min(W - 1, x + 2)
+    c0, c1 = right + 1, min(W, int(round(right + 1 + MEETS_REACH * sp)))
+    if c1 - c0 < 2:
+        return False
+    for st in (a, b):
+        # a staff found from its measure boxes is placed roughly: on a tilted page its lines at the left lie a staff
+        # space or two off its box; a one-line staff's rows are two staff spaces either side of its line
+        reach = (0.5 if st.one_line else 2.0) * st.sp + (0.0 if st.line_x0 is not None else MEETS_OFF * st.sp)
+        r0, r1 = max(0, int(round(st.mid - reach))), min(H, int(round(st.mid + reach)) + 1)
+        if _line_rows(mask, r0, r1, c0, c1) < (1 if st.one_line else MEETS_LINES):
+            return False
+    return True
 
 
 PALE = 0.12                   # a pale line is at least this far from the paper toward the ink (_pale_line)
@@ -666,7 +726,7 @@ def _links(syms: list[Sym], staves: list[Staff], gray=None, levels=None) -> tupl
         tone: list = []                                # the page's paper and dark levels, once needed
         for k in range(1, n):
             a, b = staves[k - 1], staves[k]
-            left, bars = _ink_links(gray, syms, a, b, page_left)
+            left, bars, margin = _ink_links(gray, syms, a, b, page_left)
             line = 0.0
             if left < INK_LINK and bars < 0.5:
                 line = _opening_line(gray, a, b, page_left)
@@ -675,6 +735,8 @@ def _links(syms: list[Sym], staves: list[Staff], gray=None, levels=None) -> tupl
                     line = max(line, _pale_at(levels, *tone, a, b, page_left, staves)[0])
             if left >= INK_LINK or line >= INK_LINK or bars >= 0.5:
                 decided[k - 1], said[k - 1] = True, "line"
+            elif left < INK_SPLIT and bars < 0.1 and margin >= INK_SPLIT and _braced(syms, a, b):
+                decided[k - 1] = True    # a brace or bracket the detector saw, its stroke not told from the margin's ink
             elif left < INK_SPLIT and bars < 0.1:
                 decided[k - 1], said[k - 1] = False, "white"     # white between them: a brace box claiming otherwise is wrong
             elif _braced(syms, a, b):

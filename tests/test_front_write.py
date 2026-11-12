@@ -1233,3 +1233,87 @@ def test_a_join_that_loses_the_bars_its_staves_show_does_not_fit_the_page():
     four = [front.System(staves=[0, 1], columns=[[0, 1, 2, 3], [0, 1, 2, 3]])]
     assert not front._loses_bars(four, [5, 4], joined=[1])
     assert not front._loses_bars(two, [5, 4, 5], joined=[])
+
+
+def test_a_dark_band_in_the_margin_is_not_a_systems_opening_line_and_a_line_its_staves_meet_is():
+    import numpy as np
+    sp = 10.0
+    a = front.Staff(bars=[], sp=sp, y0=100, y1=140, x0=120, x1=600)
+    b = front.Staff(bars=[], sp=sp, y0=300, y1=340, x0=120, x1=600)
+    page = np.zeros((500, 640), bool)                # the ink mask
+    for top in (100, 300):
+        for y in range(top, top + 50, 10):
+            page[y, 120:600] = True
+    # the search reaches three staff spaces left of the page's leftmost staff: here one further down, set further
+    # left in a photograph's perspective
+    left = 60
+    assert front._ink_links(page, [], a, b, left)[0] == 0.0
+    # a hand-held photograph of a part in a binder: the binder's dark edge runs down the margin past every gap, as a
+    # band, or as a thin line with paper between it and the staves; each joined the part's staves into one system
+    for x0, x1 in ((34, 56), (60, 63), (52, 70)):
+        band = page.copy()
+        band[:, x0:x1] = True
+        assert front._ink_links(band, [], a, b, left)[0] <= front.INK_SPLIT, (x0, x1)
+    # a band close to the staves is no stroke either, wherever in it the search lands
+    band = page.copy()
+    band[:, 92:117] = True
+    assert front._ink_links(band, [], a, b, left)[0] <= front.INK_SPLIT
+    # a system's own opening line, a bracket a little way left of the staves, and a brace, all where the lines begin
+    line = page.copy()
+    line[100:341, 120] = True
+    assert front._ink_links(line, [], a, b, left)[0] > front.INK_LINK
+    bracket = page.copy()
+    bracket[96:345, 104:109] = True
+    assert front._ink_links(bracket, [], a, b, left)[0] > front.INK_LINK
+    brace = page.copy()
+    for y in range(100, 341):
+        x = 108 - int(round(6 * (1 - abs(y - 220) / 120)))
+        brace[y, x:x + 4] = True
+    assert front._ink_links(brace, [], a, b, left)[0] > front.INK_LINK
+    # on a tilted photograph a staff made of measure boxes is placed roughly: its lines at the left lie a staff space
+    # or two below its box, and its opening line still counts
+    low = page.copy()
+    low[100:341, 120] = True
+    tilted = (front.Staff(bars=[], sp=sp, y0=80, y1=120, x0=120, x1=600),
+              front.Staff(bars=[], sp=sp, y0=282, y1=322, x0=120, x1=600))
+    assert front._ink_links(low, [], *tilted, left)[0] > front.INK_LINK
+    # words beside the staves (an instrument's name, lyrics) are no staff lines
+    words = page.copy()
+    words[:, 60:63] = True
+    for top in (100, 300):
+        for y in range(top + 2, top + 40, 6):
+            words[y:y + 3, 66:72] = True
+            words[y:y + 3, 76:80] = True
+    assert front._ink_links(words, [], a, b, left)[0] <= front.INK_SPLIT
+    # one-line percussion staves, their lines one pixel thick, joined by their opening line
+    c = front.Staff(bars=[], sp=sp, y0=100, y1=140, x0=120, x1=600, one_line=True)
+    d = front.Staff(bars=[], sp=sp, y0=300, y1=340, x0=120, x1=600, one_line=True)
+    single = np.zeros((500, 640), bool)
+    single[120, 120:600] = single[320, 120:600] = True
+    single[110:331, 120] = True
+    assert front._ink_links(single, [], c, d, left)[0] > front.INK_LINK
+
+
+def test_staves_with_bar_lines_of_their_own_and_a_band_beside_them_are_systems_of_their_own():
+    import numpy as np
+    from PIL import Image
+    # one part's staves, far apart, each with bar lines of its own; a staff space of 10
+    bars = {100: [120, 360, 600], 300: [120, 250, 430, 600], 500: [120, 300, 470, 600]}
+    page = np.full((700, 640), 255, np.uint8)
+    for top, xs in bars.items():
+        for y in range(top, top + 50, 10):
+            page[y, 120:600] = 0
+        for x in xs:
+            page[top:top + 41, min(x, 599)] = 0
+    dets = [d for top, xs in bars.items() for d in staff_row(top, xs)]
+    assert [len(sy.staves) for sy in front.build(dets, 640, 700, image=Image.fromarray(page)).systems] == [1, 1, 1]
+    edge = page.copy()
+    edge[:, 92:95] = 30                              # the sheet's edge, with paper between it and the staves
+    assert [len(sy.staves) for sy in front.build(dets, 640, 700, image=Image.fromarray(edge)).systems] == [1, 1, 1]
+    # their system's own opening line joins them, with or without a bracket beside it
+    line = page.copy()
+    line[100:541, 120] = 0
+    assert [len(sy.staves) for sy in front.build(dets, 640, 700, image=Image.fromarray(line)).systems] == [3]
+    line[96:545, 106:111] = 0
+    assert [len(sy.staves) for sy in front.build(dets, 640, 700, image=Image.fromarray(line)).systems] == [3]
+
