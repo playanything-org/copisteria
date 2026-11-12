@@ -100,6 +100,7 @@ class Staff:
     pos: int = -1                  # index within its system (0 = top)
     line_x0: float | None = None   # where its lines start with near-white taken as paper (_line_starts), if found
     one_line: bool = False         # a one-line staff, taken on the percussion clef that stands on it (_one_line_staves)
+    lined: bool = False            # found by its five lines in a gap between two staves (_gap_staves)
 
     @property
     def mid(self) -> float:
@@ -1005,13 +1006,22 @@ def _ink_staves_from(page, gray, syms: list[Sym], spare: list | None = None) -> 
             staves.append(st)
     # a "staff" with no measure box and no note on it is lines that are not one (a ruled line, a border, a scratch)
     notes = [s for s in syms if s.fam in ("note", "rest") and s.p >= 0.5]
-    staves = [st for st in staves if st.bars or
-              sum(1 for n in notes if st.y0 - st.sp <= n.cy <= st.y1 + st.sp and st.x0 <= n.cx <= st.x1) >= 2]
+    held = [st for st in staves if st.bars or
+            sum(1 for n in notes if st.y0 - st.sp <= n.cy <= st.y1 + st.sp and st.x0 <= n.cx <= st.x1) >= 2]
+    bare = [st for st in staves if not any(st is o for o in held)]
+    staves = held
     if not staves:
         return None
     staves += _one_line_staves(m.lines, staves, syms)
     if spare is not None:
         spare.extend(_spare_staves(m, staves, syms, claimed))
+        # the finder's own staves that hold nothing: staves of rests, where the caller counts them (_with_layout);
+        # as wide as the page's staves, so that an ossia or a ruled box is not one
+        widths = sorted(st.x1 - st.x0 for st in staves)
+        for st in bare:
+            if st.x1 - st.x0 >= ONE_LINE_WIDTH * widths[len(widths) // 2]:
+                st.lined = True
+                spare.append(st)
     for st in staves + (spare or []):
         st.bars.sort(key=lambda i: syms[i].cx)
     staves.sort(key=lambda st: st.mid)
@@ -1182,6 +1192,102 @@ def _assign(syms: list[Sym], staves: list[Staff], only: list[Sym] | None = None)
 
 DROP_SHARE = 0.34             # a staff with less than this share of the page's median staff's bars may go (_with_layout)
 SPARE_HOLDS = 2               # a staff the finder left joins only if this many sure symbols stand on it
+GAP_CLEAR = 1.5               # a staff in a gap between two staves stands this many staff spaces clear of both
+GAP_LINE = 0.3                # a row of the gap is a staff line where it holds ink over this share of the staves' width
+GAP_EVEN = 0.2                # five lines are a staff's where their distances are within this share of their mean
+LINED_SPACING = 0.15          # a staff known by its lines alone is ruled like the page's staves to within this share
+
+
+def _lined_staves(gray, staves: list[Staff], syms: list[Sym]) -> list[Staff]:
+    """On a page whose staves are the rows of its measure boxes (the line finder found too few to go by): the staves
+    the finder did find that stand clear of every one of those and are as wide as a staff. The boxes miss a staff
+    of rests, which the finder sees as well as any other. They are staves only for a caller that knows the page holds more than were found."""
+    from PIL import Image
+
+    from .vision.page.staves import find_staves
+    sps = sorted(st.sp for st in staves)
+    sp = sps[len(sps) // 2]
+    widths = sorted(st.x1 - st.x0 for st in staves)
+    width = widths[len(widths) // 2]
+    out: list[Staff] = []
+    for page in (gray, clean_page(gray)):
+        m = find_staves(Image.fromarray(page))
+        for st in _without_doubles([f for f in m.staves if 0.6 * sp <= f.spacing <= 1.6 * sp], syms):
+            mid = (st.top + st.bottom) / 2
+            if st.x1 - st.x0 >= ONE_LINE_WIDTH * width and \
+                    not any(o.y0 - GAP_CLEAR * sp < mid < o.y1 + GAP_CLEAR * sp for o in staves + out):
+                out.append(Staff(bars=[], sp=max(1.0, st.spacing), y0=st.top, y1=st.bottom, x0=float(st.x0),
+                                 x1=float(st.x1), lined=True))
+    return out
+
+
+def _borrow_bars(syms: list[Sym], staves: list[Staff], before: list[Staff]) -> None:
+    """A staff taken by its lines among staves made of measure boxes has no boxes: it is given its nearest neighbour's
+    bars, at its own height (the staves of a system share their bar lines, and a staff taken so is one of rests)."""
+    old = [st for st in staves if any(st is o for o in before) and st.bars]
+    for st in staves:
+        if st.bars or not st.lined or not old:
+            continue
+        near = min(old, key=lambda o: abs(o.mid - st.mid))
+        new = []
+        for i in near.bars:
+            box = syms[i].box
+            s = Sym(i=len(syms), cls="measure", post={CLS_ID["measure"]: 1.0}, p=0.0, n=0,
+                    box=(box[0], st.y0, box[2], st.y1), synthetic=True)
+            syms.append(s)
+            new.append(s.i)
+        st.bars, st.x0, st.x1 = new, near.x0, near.x1
+
+
+def _gap_staves(mask, staves: list[Staff]) -> list[Staff]:
+    """Staves the line finder did not find, in the gaps between those it did: five rows of ink, evenly a staff space
+    apart, clear of the staves above and below, and as wide as the page's staves by their own ink (an ossia, a ruled
+    box or a line of text is not). The finder wants its lines long, thin and sharp; on a blurred scan a staff of
+    rests (nothing on it but its lines, and those grey) is not one to it, and the page reads a staff short. They
+    are staves only for a caller that knows the page holds more than were found (_with_layout takes them after the
+    finder's own spare ones)."""
+    import numpy as np
+    out: list[Staff] = []
+    if len(staves) < 2:
+        return out
+    sps = sorted(st.sp for st in staves)
+    sp = sps[len(sps) // 2]
+    widths = sorted(st.x1 - st.x0 for st in staves)
+    width = widths[len(widths) // 2]
+    order = sorted(staves, key=lambda st: st.mid)
+    for a, b in zip(order, order[1:]):
+        x0, x1 = int(max(a.x0, b.x0) + 2 * sp), int(min(a.x1, b.x1) - 2 * sp)
+        ya, yb = max(0, int(a.y1 + GAP_CLEAR * sp)), min(mask.shape[0], int(b.y0 - GAP_CLEAR * sp))
+        if yb - ya < 4 * sp or x1 - x0 < 10 * sp:
+            continue
+        rows = mask[ya:yb, max(0, x0):x1].mean(axis=1) >= GAP_LINE
+        runs, start = [], None                      # (middle row, thickness) of each run of line rows
+        for y, on in enumerate([*rows, False]):
+            if on and start is None:
+                start = y
+            elif not on and start is not None:
+                runs.append(((start + y - 1) / 2, y - start))
+                start = None
+        runs = [r for r in runs if r[1] <= 0.6 * sp]
+        for k in range(len(runs) - 4):
+            ys = [r[0] for r in runs[k:k + 5]]
+            steps = [q - p for p, q in zip(ys, ys[1:])]
+            mean = sum(steps) / 4
+            if not (0.7 * sp <= mean <= 1.4 * sp and all(abs(step - mean) <= GAP_EVEN * mean for step in steps)):
+                continue
+            # where its lines run: the columns most of the five hold ink in, between the first and the last of them
+            cols = mask[[ya + int(round(y)) for y in ys]].sum(axis=0) >= 3
+            reach = max(2, int(2 * sp))               # an end of the lines: from there on the lines are there
+            dense = np.convolve(cols, np.ones(reach), "valid") >= 0.8 * reach
+            inked = np.flatnonzero(dense)
+            if not len(inked):
+                continue
+            on = np.flatnonzero(cols[inked[0]:inked[-1] + reach]) + inked[0]
+            left, right = float(on[0]), float(on[-1])
+            if right - left >= ONE_LINE_WIDTH * width and cols[int(left):int(right) + 1].mean() >= 0.5:
+                out.append(Staff(bars=[], sp=max(1.0, mean), y0=ya + ys[0], y1=ya + ys[4], x0=left, x1=right, lined=True))
+                break
+    return out
 
 
 def _staff_bars(st: Staff, width: float) -> float:
@@ -1333,7 +1439,8 @@ def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list
         for st in spare:
             if len(fitted) == total:
                 break
-            if _on_staff(syms, st) >= SPARE_HOLDS:
+            # five even lines across the page are a staff whatever stands on it: a part that rests is printed so
+            if st.lined or _on_staff(syms, st) >= SPARE_HOLDS:
                 fitted.append(st)
         prior["added"] = len(fitted) - len(staves)
         fitted.sort(key=lambda st: st.mid)
@@ -1410,8 +1517,27 @@ def build(dets: list[dict], width: float, height: float, image=None, cands: list
         _snap_bars(syms, staves)
     linked, prior = None, None
     if layout is not None:
+        if mask is not None and staves:
+            if not ink_path:
+                spare.extend(_lined_staves(gray, staves, syms))
+            # after the finder's own, likeliest first; a gap is between staves, not between a staff and a stray line
+            lined = [st for st in spare if st.lined]
+            spare.extend(st for st in _gap_staves(mask, staves + lined)
+                         if not any(o.y0 - GAP_CLEAR * st.sp < st.mid < o.y1 + GAP_CLEAR * st.sp for o in lined))
+            # of the staves known by their lines alone, those ruled like the page's staves, the likest first: a
+            # tablature's six lines or a ruled block are spaced otherwise, and are not taken for a staff of rests
+            sps = sorted(st.sp for st in staves)
+            sp = sps[len(sps) // 2]
+            # (the staff space of staves made of measure boxes is a quarter of a box's height, and only roughly the
+            # lines': there the likeness asked is half as close)
+            near = LINED_SPACING * (1 if ink_path else 2) * sp
+            lined = sorted((st for st in spare if st.lined and abs(st.sp - sp) <= near), key=lambda st: abs(st.sp - sp))
+            spare[:] = ([st for st in spare if not st.lined] if ink_path else []) + lined
+        before = list(staves)
         prior, staves, linked = _with_layout(layout, syms, staves, spare, lambda sts: _links(syms, sts, mask, gray),
-                                             add=ink_path, most=most)
+                                             add=ink_path or bool(spare), most=most)
+        if not ink_path:
+            _borrow_bars(syms, staves, before)
     shown = [sum(not syms[i].synthetic for i in st.bars) for st in staves]
     systems = _systems(syms, staves, mask, ink=ink_path, levels=gray, linked=linked)
     if prior is not None and prior.get("joined") and _loses_bars(systems, shown, prior["joined"]):

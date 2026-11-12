@@ -463,6 +463,109 @@ def test_a_pale_opening_line_joins_two_staves_and_a_white_gap_does_not():
     assert [len(sy.staves) for sy in edge.systems] == [1, 1]
 
 
+def _ruled(tops, width=620, height=520, lines=True):
+    """A page with a five-line staff (a staff space of 10) at each top, bar lines at 60, 310 and 559, and one line
+    down the left of them all."""
+    import numpy as np
+    page = np.full((height, width), 255, np.uint8)
+    for top in tops:
+        for y in range(top, top + 50, 10):
+            page[y, 60:560] = 0
+        for x in (60, 310, 559):
+            page[top:top + 41, x] = 0
+    page[min(tops):max(tops) + 41, 60] = 0
+    return page
+
+
+def _with(page, tops):
+    """The page with more five-line staves ruled on it, as _ruled rules them."""
+    out = page.copy()
+    for top in tops:
+        for y in range(top, top + 50, 10):
+            out[y, 60:560] = 0
+        for x in (60, 310, 559):
+            out[top:top + 41, x] = 0
+    return out
+
+
+def test_a_staff_of_rests_the_reader_left_out_is_taken_where_the_caller_counts_it():
+    """Three staves are printed; the detector boxes the bars of the outer two and sees nothing on the middle one, a
+    staff of rests, which the reader leaves out as lines that hold nothing. A caller that counts three gets it."""
+    from PIL import Image
+    tops = (100, 220, 340)
+    image = Image.fromarray(_ruled(tops))
+    dets = staff_row(100, [60, 310, 560]) + staff_row(340, [60, 310, 560]) + \
+        [det("note_quarter", (150, 115, 160, 125), staff_position=0), det("note_quarter", (150, 355, 160, 365), staff_position=0)]
+    alone = front.build(dets, 620, 520, image=image)
+    assert [(st.y0, st.y1) for st in alone.staves] == [(100, 140), (340, 380)]
+    told = front.build(dets, 620, 520, image=image, layout=[3])
+    assert [(round(st.y0), round(st.y1), round(st.x0), round(st.x1)) for st in told.staves] == \
+        [(100, 140, 60, 560), (220, 260, 60, 560), (340, 380, 60, 560)]
+    assert told.prior["used"] and told.prior["added"] == 1 and [len(sy.staves) for sy in told.systems] == [3]
+    # a caller that counts two gets no more than the page shows
+    assert len(front.build(dets, 620, 520, image=image, layout=[2]).staves) == 2
+    # six lines ruled wider than the page's staves (a tablature) between the two are not the staff of rests the
+    # caller counts: the one at the foot of the page is, ruled as they are
+    tab = _ruled((100, 460), height=640)
+    for y in range(205, 205 + 6 * 14, 14):
+        tab[y, 60:560] = 0
+    held = staff_row(100, [60, 310, 560]) + [det("note_quarter", (150, 115, 160, 125), staff_position=0),
+                                              det("note_quarter", (250, 115, 260, 125), staff_position=0)]
+    other = front.build(held + staff_row(340, [60, 310, 560]) + [det("note_quarter", (150, 355, 160, 365), staff_position=0)],
+                        620, 640, image=Image.fromarray(_with(tab, (340,))), layout=[3])
+    assert [(round(st.y0), round(st.y1)) for st in other.staves] == [(100, 140), (340, 380), (460, 500)]
+    # the staff of rests at the foot of the page, under the two that hold music, is taken too
+    foot = front.build(staff_row(100, [60, 310, 560]) + staff_row(220, [60, 310, 560]) +
+                       [det("note_quarter", (150, 115, 160, 125), staff_position=0), det("note_quarter", (150, 235, 160, 245), staff_position=0)],
+                       620, 520, image=image, layout=[3])
+    assert [(round(st.y0), round(st.y1)) for st in foot.staves] == [(100, 140), (220, 260), (340, 380)]
+
+
+def test_five_lines_in_a_gap_are_a_staff_only_where_they_are_as_wide_as_one():
+    """What the line finder does not take for a staff (its lines too grey, too thick, broken) is looked for in the
+    gaps between the staves, by five even rows of ink; an ossia over part of a bar, a ruled box, or lines that are
+    not evenly a staff space apart are none."""
+    import numpy as np
+    from PIL import Image
+    outer = _ruled((100, 340))
+    def page(rows, x0=60, x1=560, thick=3):
+        out = outer.copy()
+        for y in rows:
+            out[y:y + thick, x0:x1] = 0              # three pixels thick: no line to the finder, ink to the mask
+        return out
+    mask = lambda p: front.page_mask(front.unframe(p))                           # noqa: E731
+    a = front.Staff(bars=[], sp=10.0, y0=100, y1=140, x0=60, x1=560)
+    b = front.Staff(bars=[], sp=10.0, y0=340, y1=380, x0=60, x1=560)
+    found = front._gap_staves(mask(page(range(220, 270, 10))), [a, b])
+    assert [(round(st.y0), round(st.y1), st.lined) for st in found] == [(221, 261, True)]
+    assert (found[0].x0, found[0].x1) == (60, 559)
+    assert front._gap_staves(mask(page(range(220, 270, 10), 300, 500)), [a, b]) == []          # an ossia
+    assert front._gap_staves(mask(page((220, 228, 246, 250, 262))), [a, b]) == []              # not a staff's lines
+    assert front._gap_staves(mask(page(range(150, 200, 10))), [a, b]) == []                    # on top of the staff above
+    # an indented system: the staff in its gap is as wide as its own lines, not as the page
+    c = front.Staff(bars=[], sp=10.0, y0=100, y1=140, x0=160, x1=560)
+    d = front.Staff(bars=[], sp=10.0, y0=340, y1=380, x0=60, x1=560)
+    found = front._gap_staves(mask(page(range(220, 270, 10), 160, 560)), [c, d])
+    assert len(found) == 1 and found[0].x0 == 160
+
+
+def test_a_staff_found_by_its_lines_joins_staves_made_of_measure_boxes(monkeypatch):
+    """Where the line finder finds too few staves to go by, the staves are the rows of the measure boxes; a staff of
+    rests has no boxes, and the finder's own staff stands there. A caller that counts it gets it, with its
+    neighbour's bars."""
+    from PIL import Image
+    image = Image.fromarray(_ruled((220,)))              # only the middle staff's lines are sharp enough to find
+    dets = staff_row(100, [60, 310, 560]) + staff_row(340, [60, 310, 560]) + \
+        [det("note_quarter", (150, 115, 160, 125), staff_position=0), det("note_quarter", (150, 355, 160, 365), staff_position=0)]
+    alone = front.build(dets, 620, 520, image=image)
+    assert not alone.ink and [(st.y0, st.y1) for st in alone.staves] == [(100, 140), (340, 380)]
+    monkeypatch.setattr(front, "_gap_staves", lambda mask, staves: [])            # the finder's staff alone
+    told = front.build(dets, 620, 520, image=image, layout=[1, 1, 1])
+    assert [(round(st.y0), round(st.y1), len(st.bars)) for st in told.staves] == [(100, 140, 2), (220, 260, 2), (340, 380, 2)]
+    assert told.prior["used"] and told.prior["added"] == 1 and [s.staff for s in told.syms if s.fam == "note"] == [0, 2]
+    assert len(front.build(dets, 620, 520, image=image, layout=[1, 1]).staves) == 2
+
+
 def test_a_staff_the_measure_boxes_make_twice_is_one_staff():
     """On a photograph the detector boxes a staff's bars at two heights; each set is a row of its own, and the page
     had a staff it does not print. Two staves that only stand close are two."""

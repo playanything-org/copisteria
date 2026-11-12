@@ -72,6 +72,12 @@ What a caller may tell the front end (`front.py` `build`, `read.py` `read`; with
   adds has to fit the page (bar lines that line up, a gap narrower than one it leaves between systems, a system
   that keeps the bars its staves show); a staff that holds music is not dropped; `most` caps a system at the
   score's staves. A layout that cannot be met is not used, and `Layout.prior` says what was done and why.
+  Where the caller counts more staves than were found, a staff of rests is taken too: the finder's own staves that
+  hold nothing (it leaves them out as lines that are not a staff), five even rows of ink in a gap between two
+  staves that are as wide as a staff (`_gap_staves`: a blurred or thick-lined staff the finder does not see), and,
+  on a page whose staves are the rows of its measure boxes, the finder's staves that stand clear of those
+  (`_lined_staves`; such a staff takes its neighbour's bars). Without a layout, or with one that counts no more
+  than the page shows, none of them is a staff.
 
 What a caller may ask of the writer (`write.py` `write`; without these arguments the MusicXML is unchanged):
 
