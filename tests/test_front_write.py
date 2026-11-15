@@ -1138,6 +1138,28 @@ def test_a_layout_drops_only_what_is_hardly_a_staff_and_is_not_used_where_it_can
     assert front.build(right + left, 400, 400, layout=[]).prior["used"] is False
 
 
+def test_a_caller_that_insists_has_the_layout_s_systems_where_the_page_refuses_them(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    right, left = staff_row(180, [0, 100, 200, 300]), staff_row(260, [0, 100, 200, 300])
+    # the page joins the two staves; insisted on, the layout parts them, and says what the page said against it
+    L = front.build(right + left, 400, 400, layout=[1, 1], insist=True)
+    assert [len(sy.staves) for sy in L.systems] == [1, 1]
+    assert L.prior["used"] and L.prior["insisted"] and L.prior["why"] == "the layout parts staves the page joins"
+    # a layout the page agrees with is used as ever, insisted on or not
+    L = front.build(right + left, 400, 400, layout=[2], insist=True)
+    assert [len(sy.staves) for sy in L.systems] == [2] and L.prior["used"] and "insisted" not in L.prior
+    # staves as many as counted but systems fewer: three staves, two counted systems of one and two, parted at the
+    # widest gap whatever the counts say
+    low = staff_row(400, [0, 100, 200, 300])
+    L = front.build(right + left + low, 400, 500, layout=[1, 1], insist=True)
+    assert len(L.staves) == 3 and [len(sy.staves) for sy in L.systems] == [2, 1]
+    assert L.prior["insisted"] and L.prior["why"] == "3 staves found and 2 counted"
+    # a layout that counts nothing, or a system of more staves than the score has, is still not used
+    assert front.build(right + left, 400, 400, layout=[], insist=True).prior["used"] is False
+    assert front.build(right + left, 400, 400, layout=[1, 3], most=2, insist=True).prior["used"] is False
+
+
 def test_a_layout_that_counts_more_staves_takes_the_likeliest_the_finder_left_if_something_stands_on_it():
     staves = [front.Staff(bars=[], sp=10.0, y0=100.0, y1=140.0, x0=0.0, x1=400.0),
               front.Staff(bars=[], sp=10.0, y0=300.0, y1=340.0, x0=0.0, x1=400.0)]

@@ -24,6 +24,7 @@ Everything musical -- which readings are real, durations, pitches, voices, keys,
 """
 from __future__ import annotations
 
+import itertools
 import math
 from dataclasses import dataclass, field
 
@@ -1446,7 +1447,7 @@ def _joined_around(syms: list[Sym], upper: list[Staff], lower: list[Staff]) -> b
 
 
 def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list[Staff], links_of,
-                 add: bool, most: int | None = None) -> tuple[dict, list[Staff], list[bool]]:
+                 add: bool, most: int | None = None, insist: bool = False) -> tuple[dict, list[Staff], list[bool]]:
     """The page read with a layout its caller knows: the staves of each of its systems, counted top to bottom (from
     a reading of the whole score at a glance, where each page is a thumbnail: enough to count staves, and it sees
     what one page's ink does not say). ``links_of``: staves -> (pairs joined, what said so), _links for this page.
@@ -1466,7 +1467,15 @@ def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list
     staves whose bar lines plainly do not line up (unless staves of the system the layout forms line up across
     them, _joined_around), or a gap as wide as one it leaves between two systems (staves of one system stand
     closer than systems do). The page is then read as without it, and ``why`` says so. The
-    notes are read as ever; the layout says only which staves there are and which are played together."""
+    notes are read as ever; the layout says only which staves there are and which are played together.
+
+    ``insist``: the caller has a reading of the page without the layout that falls well short of it (a photographed
+    page whose systems the ink runs together, so that eight staves are one system of three bars) and asks for the
+    page read as the layout has it, to choose between the two itself by how much music each holds. The layout's
+    systems are then taken where the page refuses them (``insisted`` in what it did): grouped as counted where the
+    staves are as many, else parted into as many systems as it counts at the page's widest gaps, those that no
+    brace or bracket spans and the page does not join first. A layout that counts
+    no staves, or more than the score has, is still not used, nor one on a page without staves."""
     linked, said = links_of(staves)
     sizes, run = [], 0
     for k in range(len(staves)):
@@ -1485,6 +1494,27 @@ def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list
     def unused(why: str):
         prior.update(dropped=0, added=0, why=why)
         return prior, staves, linked
+
+    def insisted(why: str):
+        # The caller insists (``insist``): the page's systems are the layout's even where the page says otherwise.
+        # With the staves it counts, they are grouped as it counts them; with more or fewer, the page is parted into
+        # as many systems as it counts at its widest gaps: those no brace or bracket spans before those one does, and
+        # those it does not join before those it does. ``why`` is what the page said against it.
+        if len(fitted) == total:
+            ends = set(itertools.accumulate(target[:-1]))
+            forced = [k not in ends for k in range(1, total)]
+        else:
+            # the gaps no brace or bracket spans first, then those the page does not join, each set widest first
+            joins = linked if fitted == staves else links_of(fitted)[0]
+            widest = sorted(range(1, len(fitted)), key=lambda k: (_braced(syms, fitted[k - 1], fitted[k]), joins[k - 1],
+                                                                  fitted[k - 1].y1 - fitted[k].y0))
+            cut = set(widest[:len(target) - 1])
+            forced = [k not in cut for k in range(1, len(fitted))]
+        prior.update(used=True, insisted=True, why=why, joined=[])
+        return prior, fitted, forced
+
+    def refused(why: str):
+        return insisted(why) if insist else unused(why)
 
     total = sum(target)
     if not target or any(n < 1 for n in target):
@@ -1514,7 +1544,7 @@ def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list
         prior["added"] = len(fitted) - len(staves)
         fitted.sort(key=lambda st: st.mid)
     if len(fitted) != total:
-        return unused(f"{len(staves)} staves found and {total} counted")
+        return refused(f"{len(staves)} staves found and {total} counted") if fitted else unused(f"{len(staves)} staves found and {total} counted")
     ends, at = set(), 0
     for n in target[:-1]:
         at += n
@@ -1528,12 +1558,12 @@ def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list
     below = lambda k: fitted[k:min(b for b in bounds if b > k)]            # noqa: E731
     for k in range(1, total):
         if joined[k - 1] and not forced[k - 1]:
-            return unused("the layout parts staves the page joins")
+            return refused("the layout parts staves the page joins")
         if forced[k - 1] and not joined[k - 1]:
             if _apart(syms, fitted[k - 1], fitted[k]) and not _joined_around(syms, above(k), below(k)):
-                return unused("the layout joins staves whose bar lines do not line up")
+                return refused("the layout joins staves whose bar lines do not line up")
             if gap(k) >= between:
-                return unused("the layout joins staves as far apart as two of its systems")
+                return refused("the layout joins staves as far apart as two of its systems")
     prior["used"] = True
     prior["joined"] = [k for k in range(1, total) if forced[k - 1] and not joined[k - 1]]
     return prior, fitted, forced
@@ -1560,11 +1590,13 @@ _FORCED: dict = {}            # system (its top staff's index) -> x of bar lines
 
 
 def build(dets: list[dict], width: float, height: float, image=None, cands: list[dict] | None = None,
-          cuts: dict | None = None, layout: list | None = None, most: int | None = None) -> Layout:
+          cuts: dict | None = None, layout: list | None = None, most: int | None = None, insist: bool = False) -> Layout:
     """``image``: the page (PIL image or grey array); with it, the ink between staves decides the systems.
     ``layout``: the staves of each of the page's systems, top to bottom, where the caller knows them
     (_with_layout), and ``most``: the most staves a system of the score can have; ``Layout.prior`` then says what
-    the layout did.
+    the layout did. ``insist``: the layout's systems are taken even where the page refuses them (_with_layout), and
+    a join it makes stands even where its system then holds fewer bars than its staves (_loses_bars): the caller
+    weighs the reading against one without it.
     ``cands``: the detector's sub-threshold candidates; once the structure stands, the ones no symbol of their
     family already covers join as symbols flagged ``cand`` (the model decides whether they are real).
     ``cuts``: bar lines to add, per system (its top staff's index) -- the ones a first reading showed were
@@ -1604,12 +1636,12 @@ def build(dets: list[dict], width: float, height: float, image=None, cands: list
             spare[:] = ([st for st in spare if not st.lined] if ink_path else []) + lined
         before = list(staves)
         prior, staves, linked = _with_layout(layout, syms, staves, spare, lambda sts: _links(syms, sts, mask, gray),
-                                             add=ink_path or bool(spare), most=most)
+                                             add=ink_path or bool(spare), most=most, insist=insist)
         if not ink_path:
             _borrow_bars(syms, staves, before)
     shown = [sum(not syms[i].synthetic for i in st.bars) for st in staves]
     systems = _systems(syms, staves, mask, ink=ink_path, levels=gray, linked=linked)
-    if prior is not None and prior.get("joined") and _loses_bars(systems, shown, prior["joined"]):
+    if prior is not None and prior.get("joined") and not insist and _loses_bars(systems, shown, prior["joined"]):
         L = build(dets, width, height, image=image, cands=cands, cuts=cuts)           # the page as read without it
         L.prior = {**prior, "used": False, "dropped": 0, "added": 0, "joined": [],
                    "why": "the layout joins staves into a system with fewer bars than they show"}

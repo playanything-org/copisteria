@@ -78,13 +78,14 @@ def _softmax(z):
 
 @torch.no_grad()
 def read(dets: list[dict], width: float, height: float, model: EvidenceNet, device="cpu",
-         attention: bool = True, image=None, cands=None, feats=None, cuts=None, layout=None, most=None) -> Reading:
+         attention: bool = True, image=None, cands=None, feats=None, cuts=None, layout=None, most=None, insist=False) -> Reading:
     """``cands`` / ``feats``: the detector's sub-threshold candidates and image features (Detector.run_array
     with ``cand_conf``), for a model trained with them. ``layout``, ``most``: the staves of each of the page's
-    systems and the most a system of the score can have, where the caller knows them (front.build)."""
+    systems and the most a system of the score can have, where the caller knows them, and ``insist``, whether the
+    layout's systems are taken where the page refuses them (front.build)."""
     if not model.feat_dim:
         cands = feats = None
-    L = front.build(dets, width, height, image=image, cands=cands, cuts=cuts, layout=layout, most=most)
+    L = front.build(dets, width, height, image=image, cands=cands, cuts=cuts, layout=layout, most=most, insist=insist)
     a = features.page_arrays(L, feats)
     keys = TOKEN_KEYS + (("feat", "cand") if feats is not None else ())
     n_sys = len(L.systems)

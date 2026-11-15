@@ -94,6 +94,14 @@ What a caller may tell the front end (`front.py` `build`, `read.py` `read`; with
   on a page whose staves are the rows of its measure boxes, the finder's staves that stand clear of those
   (`_lined_staves`; such a staff takes its neighbour's bars). Without a layout, or with one that counts no more
   than the page shows, none of them is a staff.
+- **`insist`**: with a `layout`, the layout's systems are taken even where the page refuses them, for a caller that
+  has a reading without it that falls well short of it and chooses between the two itself. On a photographed page
+  the ink between systems can run them together (eight staves read as one system of three bars, against a count of
+  four piano systems), and on a page with a few more or fewer staves than counted nothing of the count was used.
+  Insisted on, the staves found are grouped as counted where they are as many, else parted into as many systems as
+  counted at the page's widest gaps, those no brace or bracket spans and the page does not join first; a join made
+  so stands even where its system holds fewer bars than its staves. A layout that counts no staves or more than
+  `most` is still not used. `Layout.prior` says `insisted` and what the page said against it.
 
 What a caller may ask of the writer (`write.py` `write`; without these arguments the MusicXML is unchanged):
 
