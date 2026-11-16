@@ -78,6 +78,36 @@ Reading (what a page's MusicXML holds):
   marks, syllable by syllable: a score for four voices and piano, its text in Chinese, was written with 380 pedal
   lines under its voices and none is printed. A pedal is under a keyboard's staves, so one is written only for a
   part of two staves or more.
+- **A full score whose staves each show a few of one grid of bar lines is one system** (`front.py` `_one_grid`,
+  `_loses_bars`). A big-band page under a "PREVIEW" watermark showed each of its 19 staves a different two or three
+  of the system's bar lines, and the measure boxes' edges stood a beat off the lines. Each pair at a join the layout
+  made was "apart", and the stated one-system layout was refused: the page was read as seven systems of five parts and
+  14 instruments' music was lost. A join is also taken where the bar lines that the staves on each side show, taken
+  together, fall on the lines the other side's staves show (from the boxes' edges or from the bar-line glyphs). A
+  join's fewer bars are judged against what most of its staves show, not the one staff the watermark cut at every
+  beat.
+- **A system shaped as two of another on the page is two** (`front.py` `_repeats`). A choir-and-piano page whose
+  systems hold two bars at the same places, with lyrics written by hand in the gap, read its first two systems as one
+  of eight staves. A system whose opening clefs are another's (read apart on the same page) repeated is parted after
+  each copy of three staves or more, where no ink line runs through the gap and no brace or bracket spans it, unless
+  another system on the page has the joined system's whole shape.
+- **Percussion staves of one or two lines stand three spaces apart** (`front.py` `_one_line_staves`). A Latin big
+  band's bongos, congas, clave and maracas are printed three to five staff spaces apart, and only the first was taken:
+  the others were held to a five-line staff's distance from it. A one-line staff is now held 2.5 staff spaces from
+  another one-line staff's line (their boxes, a five-line staff's height, then touch: such neighbours are one system,
+  `_links`), and a staff of two lines (its clef between them, a space from each) is taken on
+  the nearer line, as before.
+- **A keyboard staff read as percussion without its clef on the page is pitched** (`write.py` `_pitched_clefs`). The
+  model read an organ's bass staff F, then percussion for a line, then F, and a piano's left hand as percussion,
+  with no percussion clef glyph on either: the notes were written unpitched and the staff opened a part of its own. A
+  percussion clef the page does not show is read as the staff's pitched clef where the staff is one of a braced part
+  with a pitched staff, or reads pitched at least as often as percussion.
+- **Hairpins are written once each, with their own stop** (`write.py` `_hairpins`). Every hairpin detection was
+  written as a start at its box's left and a stop at its right, unnumbered: one hairpin detected twice opened a second
+  wedge while the first was open, and the staff-join check downstream then refused to join a piano's two staves. A
+  hairpin detected twice (one kind, one side) is the longer box; of two that overlap otherwise the first stops before
+  the second; a sliver narrower than a staff space is none; and two at once (above and below the staff) are
+  numbered apart. A short hairpin between two onsets still starts and stops at one instant.
 
 What a caller may tell the front end (`front.py` `build`, `read.py` `read`; without it nothing changes):
 

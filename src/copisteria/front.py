@@ -413,6 +413,8 @@ def _braced(syms: list[Sym], a: Staff, b: Staff) -> bool:
 
 INK_LINK = 0.85               # share of the gap a vertical ink run must cover to join two staves
 INK_SPLIT = 0.4               # below this (and no bar line through the gap): two systems
+TOUCH_PX = 2.0                # a one-line staff less than this far from its neighbour (pixels; boxes that overlap) is
+                              # one system with it
 STAFF_PAPER_TOL = 0.04        # near-white this close to the paper (of the way to the ink) is paper where a staff's
                               # lines are taken to start (_line_starts): a JPEG's noise beside a brace is not a line
 FRAME_PAPER = 0.5             # a row (column) is the sheet's once it holds half the paper of the page's middle lines
@@ -734,6 +736,11 @@ def _links(syms: list[Sym], staves: list[Staff], gray=None, levels=None) -> tupl
         tone: list = []                                # the page's paper and dark levels, once needed
         for k in range(1, n):
             a, b = staves[k - 1], staves[k]
+            if (a.one_line or b.one_line) and b.y0 - a.y1 < TOUCH_PX:
+                # a one-line staff's box is a five-line staff's height about its line: one-line percussion staves
+                # three spaces apart have boxes that touch or overlap and leave no gap to read. They are one system
+                decided[k - 1], said[k - 1] = True, "line"
+                continue
             left, bars, margin = _ink_links(gray, syms, a, b, page_left)
             line = 0.0
             if left < INK_LINK and bars < 0.5:
@@ -750,6 +757,58 @@ def _links(syms: list[Sym], staves: list[Staff], gray=None, levels=None) -> tupl
             elif _braced(syms, a, b):
                 decided[k - 1] = True
     return [bool(v) for v in decided], said
+
+
+def _opening_clef(syms: list[Sym], st: Staff) -> str | None:
+    """The clef a staff opens with: the leftmost sure clef glyph on it within OPENING_SP staff spaces of its start."""
+    clefs = [s for s in syms if s.fam == "clef" and s.p >= 0.5 and st.y0 - st.sp <= s.cy <= st.y1 + st.sp and
+             st.x0 - st.sp <= s.cx <= st.x0 + OPENING_SP * st.sp]
+    return min(clefs, key=lambda s: s.cx).cls if clefs else None
+
+
+OPENING_SP = 8.0               # a staff's opening clef stands this near its start (staff spaces)
+REPEAT_MIN = 3                 # a copy has this many staves at least: a choir's two staves over a piano's two (G F G F)
+                               # are one system beside a piano introduction (G F), whatever its opening line says
+
+
+def _repeats(syms: list[Sym], staves: list[Staff], linked: list[bool], said: list[str]) -> list[bool]:
+    """``linked`` with a system parted where it is two or more of another system on the page, one under the other: a
+    choir-and-piano page whose systems hold two bars each at the same places, with lyrics written by hand in the gap,
+    reads its first two systems as one (no ink line through the gap, so the links model joins them on the bar
+    lines). A system of n staves whose opening clefs are those of a system of m staves read apart on the page (m
+    divides n, the largest such m), repeated n / m times, is parted after every m staves, where no ink line runs
+    through the gap ("line") and no brace or bracket spans it, and m is REPEAT_MIN or more; a system whose whole shape
+    another run on the page also has is left alone. A clef the detector missed matches any, but each part
+    of the joined system and the system read apart may miss one at most, and the rest must be the same.
+    Two systems of one score on a page have one shape, so a system shaped as two of another is two."""
+    n = len(staves)
+    runs, start = [], 0
+    for k in range(1, n + 1):
+        if k == n or not linked[k - 1]:
+            runs.append(list(range(start, k)))
+            start = k
+    clefs = [_opening_clef(syms, st) for st in staves]
+    shapes = {tuple(clefs[k] for k in run) for run in runs if len(run) > 1 and sum(clefs[k] is None for k in run) <= 1}
+
+    def alike(copy, shape):        # a clef missed on either matches any; every other place has the same clef
+        known = [(a, b) for a, b in zip(copy, shape) if a is not None and b is not None]
+        return len(known) >= len(shape) - 1 and all(a == b for a, b in known)
+
+    out = list(linked)
+    for run in runs:
+        seq = [clefs[k] for k in run]
+        if tuple(seq) in shapes and sum(1 for r in runs if tuple(clefs[k] for k in r) == tuple(seq)) > 1:
+            continue                      # the page reads this shape apart elsewhere too: it is a system's shape
+        for m in sorted({len(sh) for sh in shapes if REPEAT_MIN <= len(sh) < len(run) and len(run) % len(sh) == 0},
+                        reverse=True):
+            copies = [seq[j:j + m] for j in range(0, len(run), m)]
+            cuts = [run[0] + j for j in range(m, len(run), m)]
+            if any(all(alike(copy, shape) for copy in copies) for shape in shapes if len(shape) == m) and \
+                    all(said[k - 1] != "line" and not _braced(syms, staves[k - 1], staves[k]) for k in cuts):
+                for k in cuts:
+                    out[k - 1] = False
+                break
+    return out
 
 
 def _systems(syms: list[Sym], staves: list[Staff], gray=None, ink: bool = False, levels=None,
@@ -970,9 +1029,12 @@ def _without_doubles(found: list, syms: list[Sym]) -> list:
     return out
 
 
-ONE_LINE_REACH = 1.0          # a percussion clef stands within this many staff spaces of the one line of its staff
+ONE_LINE_REACH = 1.25         # a percussion clef stands within this many staff spaces of the one line of its staff
+                              # (a staff of two lines, its clef between them, is taken on the nearer)
 ONE_LINE_WIDTH = 0.6          # ... and that line runs at least this share of the width of the page's staves
 ONE_LINE_APART = 4.0          # ... and no nearer than this many staff spaces to another staff's lines
+ONE_LINE_PAIR = 2.5           # ... or to another one-line staff's line (one made here, or a row of measure boxes a few
+                              # rows tall on its line): a percussion section's lines stand three to five spaces apart
 
 
 def _one_line_staves(lines: list, staves: list[Staff], syms: list[Sym]) -> list[Staff]:
@@ -997,9 +1059,11 @@ def _one_line_staves(lines: list, staves: list[Staff], syms: list[Sym]) -> list[
         if not near:
             continue
         line = min(near, key=lambda ln: abs(ln.y - c.cy))
-        if any(o.y0 - ONE_LINE_APART * sp < line.y < o.y1 + ONE_LINE_APART * sp for o in staves + out):
+        y = line.y
+        if any(abs(o.mid - y) < ONE_LINE_PAIR * sp if o.one_line or o.y1 - o.y0 < 2 * sp else
+               o.y0 - ONE_LINE_APART * sp < y < o.y1 + ONE_LINE_APART * sp for o in staves + out):
             continue
-        out.append(Staff(bars=[], sp=sp, y0=line.y - 2 * sp, y1=line.y + 2 * sp, x0=float(line.x0), x1=float(line.x1),
+        out.append(Staff(bars=[], sp=sp, y0=y - 2 * sp, y1=y + 2 * sp, x0=float(line.x0), x1=float(line.x1),
                          one_line=True))
     return out
 
@@ -1446,6 +1510,64 @@ def _joined_around(syms: list[Sym], upper: list[Staff], lower: list[Staff]) -> b
     return len(few) >= 2 and all(any(abs(x - y) <= ALIGN_TOL_SP * sp for y in many) for x in few)
 
 
+def _one_grid(syms: list[Sym], upper: list[Staff], lower: list[Staff]) -> bool:
+    """Whether the staves on the two sides of a join stand on one grid of bar lines although no two of them show
+    enough of it to say so (``upper`` and ``lower``: the system a layout forms, to the join and from it). Each side's
+    AROUND staves nearest the join are held, together, to the bar lines the other side's staves show: of the places
+    where they show one, LINED_UP have a partner there (within ALIGN_TOL_SP staff spaces). A thin side -- one that
+    shows fewer than TELLING places, or fewer than AROUND staves at the system's edge against a full side -- is held
+    to the other (with every place where it shows fewer than TELLING), and is not asked to vouch back. Never to their own side's staves: two systems a wrong count lumps together each agree
+    with themselves. A full score with a watermark
+    across it, or one whose staves of rests show a bar line here and there, shows each staff a different few of its
+    system's bar lines: two neighbours then share one of three and are 'apart', and so may every pair around the
+    join, while all the lines any of them shows fall on the same handful of places. Two systems each have a grid of
+    their own, and three whose first and third are alike are told apart at each join by the staves next to it.
+
+    The bar lines are read twice, from the measure boxes' right edges and from the bar-line glyphs the detector saw
+    on each staff (inside it, not its opening line or its last): where a watermark or a dense page throws the
+    boxes' edges off by a beat, the glyphs still stand where the lines are, and either witness that finds one grid
+    says so."""
+    system = upper + lower
+    sp = sum(st.sp for st in system) / len(system)
+    lo, hi = max(st.x0 for st in system) - sp, min(st.x1 for st in system) + sp
+    tol = ALIGN_TOL_SP * sp
+
+    def edges(staves):
+        return sorted(syms[k].box[2] for st in staves for k in st.bars[:-1] if not syms[k].synthetic and lo <= syms[k].box[2] <= hi)
+
+    def glyphs(staves):
+        return sorted(s.cx for st in staves for s in syms if s.fam == "barLine" and s.p >= 0.5 and
+                      st.x0 + 2 * st.sp < s.cx < st.x1 - 2 * st.sp and st.y0 - st.sp <= s.cy <= st.y1 + st.sp)
+
+    def places(xs):
+        # one place for each run of lines less than a partner's reach apart from the run's first
+        out: list[float] = []
+        for x in xs:
+            if not out or x - out[-1] > tol:
+                out.append(x)
+        return out
+
+    def fits(side, other, lines):
+        mine, others = places(lines(side)), lines(other)
+        if len(mine) < 2 or len(places(others)) < TELLING:
+            return False
+        hit = sum(1 for x in mine if any(abs(x - y) <= tol for y in others))
+        return hit == len(mine) if len(mine) < TELLING else hit >= LINED_UP * len(mine)
+
+    def one(lines):
+        near_u, near_l = upper[-AROUND:], lower[:AROUND]
+        # a side that shows too little, or the few staves at a system's edge against a full side, is thin
+        thin_u = len(places(lines(near_u))) < TELLING or len(upper) < AROUND <= len(lower)
+        thin_l = len(places(lines(near_l))) < TELLING or len(lower) < AROUND <= len(upper)
+        if thin_u and thin_l:
+            return False
+        if thin_u or thin_l:                  # a side that shows too little is held to the other; it says nothing back
+            return fits(near_u, lower, lines) if thin_u else fits(near_l, upper, lines)
+        return fits(near_u, lower, lines) and fits(near_l, upper, lines)
+
+    return any(one(lines) for lines in (edges, glyphs))
+
+
 def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list[Staff], links_of,
                  add: bool, most: int | None = None, insist: bool = False) -> tuple[dict, list[Staff], list[bool]]:
     """The page read with a layout its caller knows: the staves of each of its systems, counted top to bottom (from
@@ -1560,7 +1682,8 @@ def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list
         if joined[k - 1] and not forced[k - 1]:
             return refused("the layout parts staves the page joins")
         if forced[k - 1] and not joined[k - 1]:
-            if _apart(syms, fitted[k - 1], fitted[k]) and not _joined_around(syms, above(k), below(k)):
+            if _apart(syms, fitted[k - 1], fitted[k]) and not _joined_around(syms, above(k), below(k)) \
+                    and not _one_grid(syms, above(k), below(k)):
                 return refused("the layout joins staves whose bar lines do not line up")
             if gap(k) >= between:
                 return refused("the layout joins staves as far apart as two of its systems")
@@ -1573,12 +1696,15 @@ def _loses_bars(systems: list[System], shown: list[int], joined: list[int]) -> b
     """Whether a system the layout formed by joining staves has fewer than two thirds of the bars its staves show by
     themselves (``shown``: per staff, its measure boxes; ``joined``: the pairs (k - 1, k) the layout joined). The bars
     of a system are cut where its staves agree on a bar line; staves that are not one system do not agree, and nor
-    do the staves of one on a page photographed askew. Either way the join does not fit what the page shows."""
+    do the staves of one on a page photographed askew. Either way the join does not fit what the page shows. What
+    the staves show is what most of them show (the upper median): one staff whose boxes the detector cut in two at
+    every beat (a staff under a watermark) does not speak for a system of nineteen."""
     for sy in systems:
         if not any(k in sy.staves and k - 1 in sy.staves for k in joined):
             continue
         bars = 1 + max((max(c) for c in sy.columns if c), default=-1)
-        if 3 * bars < 2 * max(shown[k] for k in sy.staves):
+        counts = sorted(shown[k] for k in sy.staves)
+        if 3 * bars < 2 * counts[len(counts) // 2]:
             return True
     return False
 
@@ -1640,6 +1766,8 @@ def build(dets: list[dict], width: float, height: float, image=None, cands: list
         if not ink_path:
             _borrow_bars(syms, staves, before)
     shown = [sum(not syms[i].synthetic for i in st.bars) for st in staves]
+    if linked is None and mask is not None and len(staves) > 2:
+        linked = _repeats(syms, staves, *_links(syms, staves, mask, gray))
     systems = _systems(syms, staves, mask, ink=ink_path, levels=gray, linked=linked)
     if prior is not None and prior.get("joined") and not insist and _loses_bars(systems, shown, prior["joined"]):
         L = build(dets, width, height, image=image, cands=cands, cuts=cuts)           # the page as read without it

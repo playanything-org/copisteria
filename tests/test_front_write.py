@@ -1361,3 +1361,159 @@ def test_a_multi_bar_rest_outside_every_bar_box_is_a_bar_the_detector_missed():
     assert len(st.bars) == 3
     first = [s for s in front.build(dets, 640, 400).syms if s.fam == "measure" and s.synthetic and s.box[1] < 200]
     assert len(first) == 1 and first[0].box[0] < 140 and first[0].box[2] <= 300
+
+
+def test_a_full_score_whose_staves_each_show_a_few_of_one_grid_of_bar_lines_is_the_one_system_counted():
+    """A big-band page under a watermark: each staff shows a different two or three of its system's bar lines, so
+    neighbours share one of three and are 'apart', and no pair around a join says enough to vouch for it. All the
+    lines they show fall on one grid, and the stated nineteen-staff system is taken. Two systems with grids of their
+    own are still refused."""
+    said = lambda sts: ([False] * (len(sts) - 1), ["white"] * (len(sts) - 1))      # noqa: E731
+    grid = [100, 200, 300, 400, 500, 600]
+    shows = [[100, 300, 500], [200, 400, 600], [100, 400], [200, 300, 600], [300, 500], [100, 200, 600]]
+    rows = [(100 * (k + 1), [0, *shows[k % len(shows)], 700]) for k in range(19)]
+    dets = [d for y, xs in rows for d in staff_row(y, xs)]
+    L = front.build(dets, 800, 2200)
+    syms, staves = L.syms, L.staves
+    assert len(staves) == 19 and front._apart(syms, staves[0], staves[1])
+    assert front._one_grid(syms, staves[:5], staves[5:])
+    prior, fitted, linked = front._with_layout([19], syms, staves, [], said, add=False)
+    assert prior["used"] and linked == [True] * 18
+    # bar-line glyphs stand where the boxes' edges do not: the boxes are cut three spaces off the lines, one way above
+    # the join and the other below
+    off = [(100 * (k + 1), [0, *(x + (30 if k < 3 else -30) for x in grid), 700]) for k in range(6)]
+    syms = front.merge([d for y, xs in off for d in staff_row(y, xs)] +
+                       [det("barLine_single", (x - 1, y, x + 1, y + 40)) for y, _ in off for x in grid])
+    staves = [front.Staff(bars=[s.i for s in syms if s.fam == "measure" and s.box[1] == y], sp=10.0, y0=float(y),
+                          y1=float(y + 40), x0=0.0, x1=700.0) for y, _ in off]
+    assert front._apart(syms, staves[2], staves[3]) and not front._joined_around(syms, staves[:3], staves[3:])
+    assert front._one_grid(syms, staves[:3], staves[3:])
+    for s in syms:                                    # the boxes alone say nothing of one grid
+        if s.fam == "barLine":
+            s.p = 0.0
+    assert not front._one_grid(syms, staves[:3], staves[3:])
+    # two systems, each on a grid of its own, are no one system whatever is counted
+    other = [150, 250, 350, 450, 550, 650]
+    two = [(100 * (k + 1), [0, *(grid if k < 3 else other)[k % 2::2], 700]) for k in range(6)]
+    dets = [d for y, xs in two for d in staff_row(y, xs)]
+    L = front.build(dets, 800, 800)
+    assert not front._one_grid(L.syms, L.staves[:3], L.staves[3:])
+    assert not front._with_layout([6], L.syms, L.staves, [], said, add=False)[0]["used"]
+
+
+def test_one_staff_cut_at_every_beat_does_not_speak_for_its_system():
+    systems = [front.System(staves=list(range(5)), columns=[[0, 1, 2, 3, 4]] * 5)]
+    # five bars joined; one staff of five shows nine boxes (a watermark cut it at every beat): the join holds
+    assert not front._loses_bars(systems, [5, 5, 9, 4, 5], joined=[1, 2, 3, 4])
+    # most staves show nine: the join loses them
+    assert front._loses_bars(systems, [9, 9, 9, 4, 5], joined=[1, 2, 3, 4])
+
+
+def test_a_system_shaped_as_two_of_another_on_the_page_is_two():
+    """A choir-and-piano page whose first two systems hold two bars at the same places, lyrics written by hand in the
+    gap: no ink line runs through it and the first two systems are read as one of eight staves. The page's third,
+    read apart, opens G F G F; the eight open G F G F G F G F, one clef missed: two systems of four."""
+    sp = 10.0
+    ys = [100, 160, 240, 300, 420, 480, 560, 620, 760, 820, 900, 960]
+    clefs = ["clef_G2", "clef_F4", "clef_G2", None, "clef_G2", "clef_F4", "clef_G2", "clef_F4"] + ["clef_G2", "clef_F4"] * 2
+    staves = [front.Staff(bars=[], sp=sp, y0=float(y), y1=float(y + 4 * sp), x0=0.0, x1=600.0) for y in ys]
+    syms = front.merge([det(c, (5, y - 5, 25, y + 45)) for c, y in zip(clefs, ys) if c])
+    linked = [True] * 7 + [False] + [True] * 3
+    said = ["line", "line", "line", "unclear", "line", "line", "line", "white", "line", "line", "line"]
+    out = front._repeats(syms, staves, linked, said)
+    assert out == [True, True, True, False, True, True, True, False, True, True, True]
+    # an ink line through the gap joins whatever the clefs say; so does a brace over it
+    assert front._repeats(syms, staves, linked, said[:3] + ["line"] + said[4:]) == linked
+    braced = front.merge([det(c, (5, y - 5, 25, y + 45)) for c, y in zip(clefs, ys) if c] + [det("grpSym_brace", (0, 300, 4, 460))])
+    assert front._repeats(braced, staves, linked, said) == linked
+    # a system shaped otherwise is no copy: a choir of four over a piano is one system beside a piano alone
+    clefs = ["clef_G2", "clef_G2", "clef_G2_8b", "clef_F4", "clef_G2", "clef_F4"] + ["clef_G2", "clef_F4"]
+    ys = [100, 160, 220, 280, 360, 420, 560, 620]
+    staves = [front.Staff(bars=[], sp=sp, y0=float(y), y1=float(y + 4 * sp), x0=0.0, x1=600.0) for y in ys]
+    syms = front.merge([det(c, (5, y - 5, 25, y + 45)) for c, y in zip(clefs, ys)])
+    linked = [True] * 5 + [False, True]
+    assert front._repeats(syms, staves, linked, ["unclear"] * 7) == linked
+
+
+def test_percussion_staves_of_one_or_two_lines_three_spaces_apart_are_each_a_staff():
+    from copisteria.vision.page.staves import Line
+    staves = [front.Staff(bars=[], sp=10.0, y0=100.0, y1=140.0, x0=0.0, x1=400.0)]
+    line = lambda y: Line(y=y, x0=0, x1=400, thickness=2, score=0.5)             # noqa: E731
+    clef = lambda y: det("clef_perc", (20, y - 10, 30, y + 10))                  # noqa: E731
+    # bongos on two lines (clef between them), then a clave and maracas on one line each, 3 to 5 spaces apart
+    lines = [line(200), line(220), line(265), line(295)]
+    found = front._one_line_staves(lines, staves, front.merge([clef(210), clef(265), clef(295)]))
+    assert [st.mid for st in found] == [200.0, 265.0, 295.0]
+    # two lines closer than that are one staff's
+    assert len(front._one_line_staves([line(200), line(215)], staves, front.merge([clef(200), clef(215)]))) == 1
+
+
+def test_overlapping_hairpins_are_written_once_each_with_its_own_stop():
+    sp = 10.0
+    starts = lambda dirs: [(d[0], d[2]) for d in dirs]                               # noqa: E731
+    # one crescendo detected twice: the longer
+    dirs = write._hairpins([(15, 120, "crescendo", True), (25, 100, "crescendo", True)], sp)
+    assert starts(dirs) == [(15, ("crescendo", 1)), (120, ("stop", 1))]
+    # a crescendo into a diminuendo that overlaps it, even by much: the first stops before the second starts
+    for x0 in (95, 60):
+        dirs = write._hairpins([(15, 105, "crescendo", True), (x0, 175, "diminuendo", True)], sp)
+        assert [d[2] for d in dirs] == [("crescendo", 1), ("stop", 1), ("diminuendo", 1), ("stop", 1)]
+        assert dirs[1][0] < dirs[2][0]
+    # a sliver is no hairpin, nor one the clip leaves a sliver
+    assert write._hairpins([(30, 35, "crescendo", True)], sp) == []
+    dirs = write._hairpins([(15, 30, "crescendo", True), (22, 140, "diminuendo", True)], sp)
+    assert [d[2] for d in dirs] == [("diminuendo", 1), ("stop", 1)]
+    # one above and one below the staff at once: numbered apart, each stop its own
+    dirs = write._hairpins([(15, 140, "crescendo", False), (55, 175, "diminuendo", True)], sp)
+    assert sorted(d[2] for d in dirs) == [("crescendo", 1), ("diminuendo", 2), ("stop", 1), ("stop", 2)]
+
+
+def test_a_keyboard_staff_read_as_percussion_without_its_clef_on_the_page_is_pitched(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    xs = [0, 150, 300]
+    rows = staff_row(100, xs) + staff_row(180, xs)
+    notes = [det("note_quarter", (50, 115, 60, 125), staff_position=0), det("note_quarter", (50, 195, 60, 205), staff_position=0)]
+    lower = lambda s: "perc" if s.cy > 170 else "G2"                                 # noqa: E731
+    L = front.build(rows + [det("grpSym_brace", (0, 100, 8, 220))] + notes, 400, 300)
+    root = ET.fromstring(write.write(_reading(L, _tokens(L, clef=lower))).split("\n", 2)[2])
+    (piano,) = root.findall("part")
+    assert [c.findtext("sign") for c in piano.iter("clef")] == ["G", "F"] and not list(piano.iter("unpitched"))
+    # with a percussion clef glyph on that staff, it stays percussion
+    L = front.build(rows + [det("grpSym_brace", (0, 100, 8, 220)), det("clef_perc", (5, 185, 15, 215))] + notes, 400, 300)
+    tok = _tokens(L, clef=lower)
+    for s in L.syms:
+        if s.fam == "clef":
+            tok[s.i] = {"real": {"p": 1.0, "det": 1.0, "ev": 0}, "cls": {"v": "clef_perc"}}
+    root = ET.fromstring(write.write(_reading(L, tok)).split("\n", 2)[2])
+    assert "percussion" in [c.findtext("sign") for c in root.iter("clef")]
+
+
+def test_two_systems_a_wrong_count_lumps_together_are_not_one_grid_however_many_staves_each_has():
+    """Each side's staves agree with their own system's: only the other side's lines vouch for a join."""
+    said = lambda sts: ([False] * (len(sts) - 1), ["white"] * (len(sts) - 1))      # noqa: E731
+    grid, other = [100, 200, 300, 400, 500, 600], [150, 250, 350, 450, 550, 650]
+    rows = [(100 * (k + 1), [0, *(grid if k < 5 else other), 700]) for k in range(10)]
+    dets = [d for y, xs in rows for d in staff_row(y, xs)]
+    L = front.build(dets, 800, 1200)
+    assert not front._one_grid(L.syms, L.staves[:5], L.staves[5:])
+    assert not front._with_layout([10], L.syms, L.staves, [], said, add=False)[0]["used"]
+
+
+def test_one_line_staves_whose_boxes_touch_are_one_system():
+    import numpy as np
+    staves = [front.Staff(bars=[], sp=10.0, y0=180.0, y1=220.0, x0=0.0, x1=400.0, one_line=True),
+              front.Staff(bars=[], sp=10.0, y0=210.0, y1=250.0, x0=0.0, x1=400.0, one_line=True)]
+    gray = np.full((400, 400), 255, np.uint8)
+    linked, said = front._links([], staves, gray, gray)
+    assert linked == [True] and said == ["line"]
+
+
+def test_a_choir_over_a_piano_is_one_system_beside_a_piano_introduction():
+    sp = 10.0
+    ys = [100, 160, 300, 360, 420, 480, 620, 680, 740, 800]
+    clefs = ["clef_G2", "clef_F4"] + ["clef_G2", "clef_F4"] * 4
+    staves = [front.Staff(bars=[], sp=sp, y0=float(y), y1=float(y + 4 * sp), x0=0.0, x1=600.0) for y in ys]
+    syms = front.merge([det(c, (5, y - 5, 25, y + 45)) for c, y in zip(clefs, ys)])
+    linked = [True, False, True, True, True, False, True, True, True]
+    assert front._repeats(syms, staves, linked, ["unclear"] * 9) == linked

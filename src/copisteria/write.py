@@ -328,6 +328,41 @@ def _bar_state(rd: Reading, staff: int, bar: int, prev: dict) -> dict:
     return state
 
 
+def _pitched_clefs(rd: Reading, plans: list, place: list) -> dict[tuple[int, int], str]:
+    """(part, its staff) -> the pitched clef read where the model reads a percussion clef that the page does not show:
+    a staff of five lines on which no percussion clef glyph was seen, either one of a braced part whose other staff is
+    pitched (a keyboard's left hand) or one whose bars are read pitched at least as often as percussion (an organ's
+    pedal staff read F, then percussion for a line, then F). Its clef is then the one it last read pitched (or, before
+    any, the first it reads pitched; a lower staff of a keyboard that reads none takes the bass clef, an upper one the
+    treble). A percussion clef glyph on any of its staves, a one-line staff, or a staff read percussion more often than
+    not and in no braced part (a drum staff whose clef the detector missed) stays percussion."""
+    L = rd.layout
+    shown = {s.staff for s in L.syms if s.fam == "clef" and _real(rd, s.i) and _clef_of_cls(_cls(rd, s.i)) == "perc"}
+    out: dict[tuple[int, int], str] = {}
+    for n, pl in enumerate(plans):
+        states: dict[int, list[str]] = {k_i: [] for k_i in range(len(pl.staves))}
+        kept: set[int] = set()
+        for s_i in range(len(L.systems)):
+            for k_i, pos in enumerate(pl.staves):
+                staff = place[s_i].get(pos)
+                if staff is None:
+                    continue
+                if L.staves[staff].one_line or staff in shown:
+                    kept.add(k_i)
+                for b in L.staves[staff].bars:
+                    r = rd.tok.get(b)
+                    if r is not None and "clef" in r and r["clef"]["v"] is not None:
+                        states[k_i].append(r["clef"]["v"])
+        for k_i, vs in states.items():
+            perc, pitched = vs.count("perc"), [v for v in vs if v != "perc"]
+            if not perc or k_i in kept:
+                continue
+            keyboard = len(pl.staves) > 1 and any(v != "perc" for o, ws in states.items() if o != k_i for v in ws)
+            if keyboard or len(pitched) >= perc:
+                out[(n, k_i)] = pitched[0] if pitched else ("F4" if k_i > 0 else "G2")
+    return out
+
+
 def _texts_near(texts, box, sp):
     """OCR digits over a multi-measure rest: its count."""
     if not texts:
@@ -354,6 +389,7 @@ def _events(rd: Reading, staff: int, bar: int, clef: str, key: int, texts) -> tu
     mid_clefs = [(x, c) for x, c in clef_changes if x > first_x]
     events: list[Event] = []
     dirs: list = []
+    pins: list = []
     marks = {"left": None, "right": None, "endings": [], "multirest": None, "repeat_bar": False,
              "end_clef": mid_clefs[-1][1] if mid_clefs else None,
              "meter": any(_fam(_cls(rd, s.i)) == "meterSig" for s in syms)}
@@ -392,8 +428,7 @@ def _events(rd: Reading, staff: int, bar: int, clef: str, key: int, texts) -> tu
         elif f == "dynam" and c[len("dynam_"):] in DYN:
             dirs.append((s.cx, "dyn", c[len("dynam_"):], s.cy > st.mid))
         elif f == "hairpin" and c in ("hairpin_cres", "hairpin_dim"):
-            dirs.append((s.box[0], "wedge", "crescendo" if c == "hairpin_cres" else "diminuendo", s.cy > st.mid))
-            dirs.append((s.box[2], "wedge", "stop", s.cy > st.mid))
+            pins.append((s.box[0], s.box[2], "crescendo" if c == "hairpin_cres" else "diminuendo", s.cy > st.mid))
         elif c in ARTIC or c in TECH or c in ORNAMENT or c == "fermata":
             dirs.append((s.cx, "mark", c, s.cy))
         elif c in AFTER_MARK:                       # breath mark / caesura: after the note on its left
@@ -410,6 +445,7 @@ def _events(rd: Reading, staff: int, bar: int, clef: str, key: int, texts) -> tu
         elif f == "clef" and s.cx > first_x:
             dirs.append((s.cx, "clef", _clef_of_cls(c), None))
     _decode_alters(rd, syms, events, sp)
+    dirs += _hairpins(pins, sp)
     # marks on notes: the nearest note in x (within 1.5 staff spaces)
     for x, kind, c, y in [d for d in dirs if d[1] == "mark"]:
         cands = [e for e in events if e.kind == "note" and abs(e.x - x) < 1.5 * sp]
@@ -418,6 +454,46 @@ def _events(rd: Reading, staff: int, bar: int, clef: str, key: int, texts) -> tu
             best.marks.append(c)
     dirs = [d for d in dirs if d[1] != "mark"]
     return events, dirs, marks
+
+
+HAIRPIN_MIN_SP = 1.0           # a hairpin detection narrower than this (staff spaces) is no hairpin
+HAIRPIN_SAME = 0.5             # two detections on one side of a staff that share this much of the shorter are one
+
+
+def _hairpins(pins: list, sp: float) -> list:
+    """A bar's hairpin detections on one staff [(x0, x1, kind, below)] as wedge directions [(x, "wedge", (type,
+    number), below)], each start with its stop. A hairpin detected twice (two boxes of one kind on one side of the
+    staff that overlap by HAIRPIN_SAME of the shorter) is the longer of them; of two that overlap otherwise, the
+    earlier stops where the later starts (a crescendo into a diminuendo). One narrower than HAIRPIN_MIN_SP is
+    dropped. Hairpins that sound together (one above the staff, one below) are numbered 1 and 2, so that each stop
+    closes its own (1 is MusicXML's default and is not written). A short hairpin between two onsets still starts and
+    stops at one instant, as before: moving it to the note before reads worse than leaving it where it stands."""
+    out = []
+    for below in (False, True):
+        side = sorted((p for p in pins if p[3] == below and p[1] - p[0] >= HAIRPIN_MIN_SP * sp), key=lambda p: (p[0], -p[1]))
+        kept: list[list] = []
+        for x0, x1, kind, _ in side:
+            if kept:
+                a = kept[-1]
+                lap = min(a[1], x1) - max(a[0], x0)
+                if a[2] == kind and lap >= HAIRPIN_SAME * min(a[1] - a[0], x1 - x0):
+                    if x1 - x0 > a[1] - a[0]:
+                        kept[-1] = [x0, x1, kind]
+                    continue
+                if lap > -0.01 * sp:                  # touching or overlapping: the earlier stops first
+                    a[1] = min(a[1], x0 - 0.01 * sp)
+            kept.append([x0, x1, kind])
+        out += [(p[0], p[1], p[2], below) for p in kept if p[1] - p[0] >= HAIRPIN_MIN_SP * sp]
+    # numbers: a hairpin takes the lowest number no hairpin sounding with it holds
+    out.sort()
+    ends: dict[int, float] = {}
+    dirs = []
+    for x0, x1, kind, below in out:
+        number = min(k for k in range(1, len(out) + 2) if ends.get(k, -math.inf) < x0)
+        ends[number] = x1
+        dirs.append((x0, "wedge", (kind, number), below))
+        dirs.append((x1, "wedge", ("stop", number), below))
+    return dirs
 
 
 ALTER_KEEP_P = 0.97              # a model this sure of another alteration keeps it against the notation's rule
@@ -1434,6 +1510,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
         ncol = 1 + max((max(c) for c in sy.columns if c), default=-1)
         columns += [(s_i, c) for c in range(ncol)]
     single_part = len(plans) == 1
+    pitched_clefs = _pitched_clefs(rd, plans, place)
 
     def build(opening: str | None):
         """Every part's measures as events (ties are resolved across them next); ``opening``: the meter of the page's
@@ -1444,6 +1521,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
         fit: list = []
         for n, pl in enumerate(plans):
             state = [{"key": 0, "time": "4/4", "clef": "G2"} for _ in pl.staves]
+            clef_read = [False] * len(pl.staves)          # a clef was read on the staff (not the default)
             first = [True] * len(pl.staves)
             measures = []
             prev_events = [None] * len(pl.staves)
@@ -1461,7 +1539,11 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                         m["staves"].append(None)
                         continue
                     j = bars[0]
+                    before = state[k_i]["clef"]
                     state[k_i] = _bar_state(rd, staff, j, state[k_i])
+                    if state[k_i]["clef"] == "perc" and (n, k_i) in pitched_clefs:
+                        state[k_i]["clef"] = before if clef_read[k_i] and before != "perc" else pitched_clefs[(n, k_i)]
+                    clef_read[k_i] = True
                     if first[k_i]:
                         first[k_i] = False
                         if opening is not None:
@@ -1787,7 +1869,8 @@ def _direction(meas, d, staff_no):
     if kind == "dyn":
         _sub(_sub(dt, "dynamics"), payload)
     elif kind == "wedge":
-        _sub(dt, "wedge", type=payload)
+        typ, number = payload
+        _sub(dt, "wedge", type=typ, **({"number": number} if number > 1 else {}))
     elif kind == "octave":
         typ, size = payload
         _sub(dt, "octave-shift", type=typ, size=size)
