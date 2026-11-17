@@ -1067,7 +1067,14 @@ def _decode_rhythm(order: list, strict: bool = False, bar_len: Fraction | None =
 
     def dur48(e, t):
         d = _duration(e.typ, e.dots, t) * G
-        return int(d) if d.denominator == 1 else None
+        if d.denominator == 1:
+            return int(d)
+        # A value no tuplet choice times on the grid (a dotted 128th, feab56f3 p28) is decoded at its nearest step
+        # under its own reading, so the voice it stands in still decodes; it is written as read.
+        return max(1, round(d)) if t == e.tup and not timed(e) else None
+
+    def timed(e):
+        return any(t != "other" and (_duration(e.typ, e.dots, t) * G).denominator == 1 for t in dict.fromkeys(TUP_CHOICES + [e.tup]))
 
     def end_logp(e, t):
         """Per state of the last event: what its end leaves of the bar (past it, or short of it)."""
@@ -1081,7 +1088,7 @@ def _decode_rhythm(order: list, strict: bool = False, bar_len: Fraction | None =
         over, short = end_logp(evs[0], evs[0].tup)
         return float(np.max(emit(evs[0]) + over + short))
     idx = np.arange(K)
-    choices = [[t for t in dict.fromkeys(TUP_CHOICES + [e.tup]) if t not in ("other",) and dur48(e, t)]
+    choices = [[t for t in dict.fromkeys(TUP_CHOICES + [e.tup]) if t not in ("other",) and dur48(e, t)] or [e.tup]
                for e in evs]
     score = emit(evs[0]).copy()
     back = []
@@ -1512,6 +1519,8 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
     single_part = len(plans) == 1
     pitched_clefs = _pitched_clefs(rd, plans, place)
 
+    unvoiced: dict = {}                 # (staff, bar) -> why the writer could not voice it (`build`)
+
     def build(opening: str | None):
         """Every part's measures as events (ties are resolved across them next); ``opening``: the meter of the page's
         opening bars, over the bar heads' own reading (None: as read). Returns (measures, durations, the rhythm
@@ -1519,6 +1528,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
         all_durs: set = set()
         built = []
         fit: list = []
+        unvoiced.clear()
         for n, pl in enumerate(plans):
             state = [{"key": 0, "time": "4/4", "clef": "G2"} for _ in pl.staves]
             clef_read = [False] * len(pl.staves)          # a clef was read on the staff (not the default)
@@ -1565,8 +1575,16 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                                        "chord": e.chord and not e.struck, "struck": False})
                               for e in prev_events[k_i]]
                     read, lanes = {}, {}
-                    vs = _voices(ev, L.staves[staff].sp, single_staff_part=len(pl.staves) == 1,
-                                 bar_len=_time_len(state[k_i]["time"]), score=fit, read=read, lanes=lanes)
+                    try:
+                        vs = _voices(ev, L.staves[staff].sp, single_staff_part=len(pl.staves) == 1,
+                                     bar_len=_time_len(state[k_i]["time"]), score=fit, read=read, lanes=lanes)
+                    except (TimeoutError, MemoryError):
+                        raise
+                    except Exception as error:
+                        # A staff's bar the writer cannot voice or time is that bar's loss alone, never the page's: it
+                        # is written empty, as a staff with nothing read in it, and named in ``facts["unvoiced"]``.
+                        unvoiced[(staff, j)] = f"{type(error).__name__}: {error}"[:200]
+                        vs, read, lanes, ev = {}, {}, {}, []
                     prev_events[k_i] = ev or prev_events[k_i]
                     m["staves"].append({"staff": staff, "bar": j, "voices": vs, "read": read, "lanes": lanes,
                                         "dirs": dirs, "marks": marks, "state": dict(state[k_i])})
@@ -1843,7 +1861,8 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                     _sub(ne, "duration", units(bar_len))
                     _sub(ne, "voice", 1)
     if facts is not None:
-        facts.update(plans=plans, place=place, columns=columns, built=built, bar_ends=bar_ends, untied=untied, div=div)
+        facts.update(plans=plans, place=place, columns=columns, built=built, bar_ends=bar_ends, untied=untied, div=div,
+                     unvoiced=[[staff, bar, why] for (staff, bar), why in sorted(unvoiced.items())])
         if roster is not None:
             facts["roster"] = unexplained
     ET.indent(root)

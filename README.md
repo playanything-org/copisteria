@@ -39,6 +39,12 @@ Reading (what a page's MusicXML holds):
   is still written at the time the model gave it. Ties are paired along the voice as it was read; the notes of a
   tie, and a run of notes with its beam and its tuplet, stay in one voice where they can; and the staff's
   directions are written with the voice whose next event they stand at.
+- **A bar the writer cannot voice costs that bar, never the page** (`write.py` `_decode_rhythm`, `write`). The
+  rhythm decoder times each event on a grid of 48 steps a quarter under each tuplet it may be; a dotted 128th is 2.25
+  steps under every one, the decoder had no choice for it, and the page's whole writing failed (a 22-staff orchestral
+  page delivered as empty bars). A value no choice times is now decoded at its nearest step under its own reading
+  and written as read; and a staff's bar whose voicing or timing still fails is written empty, as a staff with
+  nothing read in it, and named in `facts["unvoiced"]`, while every other bar of the page stands.
 - **A chord read as separate notes is one chord, and each voice under a beam is beamed** (`write.py` `_unlapped`,
   `_attach`). A left hand's bass note and chord in turn stand under one beam; the model reads the chord's notes as
   events of their own at one onset. Written in voices of their own they lost the beam, which went to the voice

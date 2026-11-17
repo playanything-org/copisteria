@@ -241,6 +241,41 @@ def test_rhythm_decoding_keeps_plain_eighths():
     assert [e.tup for e in evs[:-1]] == ["none"] * 3
 
 
+def test_rhythm_decoding_times_a_value_off_the_grid_at_its_nearest_step():
+    # A dotted 128th is 2.25 steps of the decoder's 48 a quarter, and no tuplet choice times it: the voice it stood in
+    # had no choice to decode it by, and the page's writing failed (IndexError, feab56f3 p28: 22 staves lost).
+    E = write.Event
+    evs = [E(x=0, kind="note", typ="eighth", dist=_dist(0)), E(x=10, kind="note", typ="128th", dots=1, dist=_dist(0.5)),
+           E(x=20, kind="note", typ="eighth", dist=_dist(0.55))]
+    write._decode_rhythm(evs)
+    assert [e.tup for e in evs] == ["none", "none", "none"]
+    assert [round(e.onset, 3) for e in evs][:2] == [0.0, 0.5]
+
+
+def test_a_bar_the_writer_cannot_voice_is_written_empty_and_the_page_stands(monkeypatch):
+    dets = staff_row(100, [0, 200, 400]) + [det("meterSig_4_4", (10, 100, 20, 140))]
+    dets += [det("note_quarter", (x - 5, 115, x + 5, 125), staff_position=0) for x in (40, 80, 240, 280)]
+    L = front.build(dets, 500, 300)
+    tok = _tokens(L)
+    for s in L.syms:
+        if s.fam == "meterSig":
+            tok[s.i] = {"real": {"p": 1.0, "det": 1.0, "ev": 0}, "cls": {"v": "meterSig_4_4"}}
+    voices = write._voices
+
+    def first_bar_fails(ev, *args, **kwargs):
+        if ev and min(e.x for e in ev) < 100:
+            raise IndexError("list index out of range")
+        return voices(ev, *args, **kwargs)
+    monkeypatch.setattr(write, "_voices", first_bar_fails)
+    facts = {}
+    root = ET.fromstring(write.write(_reading(L, tok), facts=facts).split("\n", 2)[2])
+    measures = root.findall(".//measure")
+    assert len(measures) == 2
+    assert measures[0].findall("note") == [] and measures[0].findtext("forward/duration") == "4"
+    assert len([n for n in measures[1].findall("note") if n.find("pitch") is not None]) == 2
+    assert facts["unvoiced"] == [[0, 0, "IndexError: list index out of range"]]
+
+
 def _tokens(L, clef=lambda s: "G2"):
     tok = {}
     for s in L.syms:
