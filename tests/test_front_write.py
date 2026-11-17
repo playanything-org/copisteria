@@ -1552,3 +1552,29 @@ def test_a_choir_over_a_piano_is_one_system_beside_a_piano_introduction():
     syms = front.merge([det(c, (5, y - 5, 25, y + 45)) for c, y in zip(clefs, ys)])
     linked = [True, False, True, True, True, False, True, True, True]
     assert front._repeats(syms, staves, linked, ["unclear"] * 9) == linked
+
+
+def test_a_layout_parts_two_staves_the_page_joins_by_a_line_alone_where_their_bar_lines_do_not_line_up(monkeypatch):
+    """A page pasted together from cuttings (2acdff7b p2): a black edge runs down the left of two one-staff systems,
+    which the front end takes for the line that opens a system. Their bar lines do not line up and no brace spans
+    them: a caller that counts two systems of one staff parts them. Staves whose bar lines line up stay joined."""
+    from copisteria import links
+    from PIL import Image
+    import numpy as np
+    monkeypatch.setattr(links, "load", lambda: None)
+    page = np.full((400, 620), 255, np.uint8)
+    for top in (100, 200):
+        for y in range(top, top + 50, 10):
+            page[y, 60:560] = 0
+    page[100:241, 58:62] = 0                           # the edge down the left of both
+    image = Image.fromarray(page)
+    upper, lower = staff_row(100, [60, 180, 300, 420, 560]), staff_row(200, [60, 240, 330, 470, 560])
+    notes = [det("note_quarter", (x, 115, x + 10, 125), staff_position=0) for x in (100, 220, 350)] + \
+        [det("note_quarter", (x, 215, x + 10, 225), staff_position=0) for x in (100, 280, 400)]
+    alone = front.build(upper + lower + notes, 620, 400, image=image)
+    assert [len(sy.staves) for sy in alone.systems] == [2]
+    told = front.build(upper + lower + notes, 620, 400, image=image, layout=[1, 1])
+    assert [len(sy.staves) for sy in told.systems] == [1, 1] and told.prior["used"]
+    # two staves on one grid of bar lines, joined by the same line, stay one system
+    lined = front.build(upper + staff_row(200, [60, 180, 300, 420, 560]) + notes, 620, 400, image=image, layout=[1, 1])
+    assert [len(sy.staves) for sy in lined.systems] == [2] and lined.prior["why"] == "the layout parts staves the page joins"

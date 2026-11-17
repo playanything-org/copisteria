@@ -1672,14 +1672,14 @@ def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list
         at += n
         ends.add(at)
     forced = [k not in ends for k in range(1, total)]
-    joined, _ = links_of(fitted) if prior["dropped"] or prior["added"] else (linked, said)
+    joined, why_joined = links_of(fitted) if prior["dropped"] or prior["added"] else (linked, said)
     gap = lambda k: fitted[k].y0 - fitted[k - 1].y1                        # noqa: E731
     between = min((gap(k) for k in ends), default=math.inf)
     bounds = [0, *sorted(ends), total]
     above = lambda k: fitted[max(b for b in bounds if b < k):k]            # noqa: E731  (the layout's system, to the join)
     below = lambda k: fitted[k:min(b for b in bounds if b > k)]            # noqa: E731
     for k in range(1, total):
-        if joined[k - 1] and not forced[k - 1]:
+        if joined[k - 1] and not forced[k - 1] and not _line_alone(syms, fitted, k, why_joined, above(k), below(k)):
             return refused("the layout parts staves the page joins")
         if forced[k - 1] and not joined[k - 1]:
             if _apart(syms, fitted[k - 1], fitted[k]) and not _joined_around(syms, above(k), below(k)) \
@@ -1690,6 +1690,16 @@ def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list
     prior["used"] = True
     prior["joined"] = [k for k in range(1, total) if forced[k - 1] and not joined[k - 1]]
     return prior, fitted, forced
+
+
+def _line_alone(syms: list[Sym], staves: list[Staff], k: int, said: list[str], upper: list[Staff], lower: list[Staff]) -> bool:
+    """Whether the page joins staves k - 1 and k by a line through the gap alone, where a layout parts them: no brace or
+    bracket spans them, their bar lines plainly do not line up (_apart), and neither the staves around the join
+    (_joined_around) nor the two sides' bar lines together (_one_grid) say one system. A page pasted together from
+    cuttings (2acdff7b) has a black edge down the left of two one-staff systems; the front end took it for the line
+    that opens a system and wrote one voice's two lines as two parts played at once."""
+    return (said[k - 1] == "line" and not _braced(syms, staves[k - 1], staves[k]) and _apart(syms, staves[k - 1], staves[k])
+            and not _joined_around(syms, upper, lower) and not _one_grid(syms, upper, lower))
 
 
 def _loses_bars(systems: list[System], shown: list[int], joined: list[int]) -> bool:

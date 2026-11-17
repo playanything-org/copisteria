@@ -1067,14 +1067,16 @@ def _decode_rhythm(order: list, strict: bool = False, bar_len: Fraction | None =
 
     def dur48(e, t):
         d = _duration(e.typ, e.dots, t) * G
-        if d.denominator == 1:
-            return int(d)
-        # A value no tuplet choice times on the grid (a dotted 128th, feab56f3 p28) is decoded at its nearest step
-        # under its own reading, so the voice it stands in still decodes; it is written as read.
-        return max(1, round(d)) if t == e.tup and not timed(e) else None
+        return int(d) if d.denominator == 1 else None
 
-    def timed(e):
-        return any(t != "other" and (_duration(e.typ, e.dots, t) * G).denominator == 1 for t in dict.fromkeys(TUP_CHOICES + [e.tup]))
+    def step48(e, t):
+        # A value no tuplet choice times on the grid (a dotted 128th, feab56f3 p28) steps to the next event at its
+        # nearest step under its own reading, so the voice it stands in still decodes; it is written as read. Only the
+        # step to the next event: what a voice's last event leaves of the bar is scored as before.
+        d = dur48(e, t)
+        if d is None and t == e.tup and not any(dur48(e, c) for c in dict.fromkeys(TUP_CHOICES + [e.tup]) if c != "other"):
+            return max(1, round(_duration(e.typ, e.dots, t) * G))
+        return d
 
     def end_logp(e, t):
         """Per state of the last event: what its end leaves of the bar (past it, or short of it)."""
@@ -1101,7 +1103,7 @@ def _decode_rhythm(order: list, strict: bool = False, bar_len: Fraction | None =
         suf = np.maximum.accumulate(score[::-1])[::-1]            # best score at or after each state
         suf_arg = np.minimum.accumulate(np.where(score >= suf, idx, K)[::-1])[::-1]   # (the earliest such)
         for c, t in enumerate(choices[i - 1]):
-            d = dur48(prev, t)
+            d = step48(prev, t)
             if d is None or d <= 0 or d >= K:
                 continue
             tl = tup_logp(prev, t)

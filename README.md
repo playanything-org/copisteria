@@ -42,9 +42,15 @@ Reading (what a page's MusicXML holds):
 - **A bar the writer cannot voice costs that bar, never the page** (`write.py` `_decode_rhythm`, `write`). The
   rhythm decoder times each event on a grid of 48 steps a quarter under each tuplet it may be; a dotted 128th is 2.25
   steps under every one, the decoder had no choice for it, and the page's whole writing failed (a 22-staff orchestral
-  page delivered as empty bars). A value no choice times is now decoded at its nearest step under its own reading
-  and written as read; and a staff's bar whose voicing or timing still fails is written empty, as a staff with
+  page delivered as empty bars). A value no choice times now steps to the next event at its nearest step under its
+  own reading and is written as read (what a voice's last event leaves of the bar is scored as before); and a staff's bar whose voicing or timing still fails is written empty, as a staff with
   nothing read in it, and named in `facts["unvoiced"]`, while every other bar of the page stands.
+- **A layout parts two staves the page joins by a line alone** (`front.py` `_line_alone`). A page pasted together
+  from cuttings has a black edge down the left of two one-staff systems; the front end took it for the line that
+  opens a system, the caller's layout (two systems of one staff) was refused as "parting staves the page joins", and
+  one voice's two lines were written as two parts at once. A layout now parts such a join where no brace or bracket
+  spans it, the two staves' bar lines plainly do not line up, and neither the staves around it nor the two sides'
+  grid of bar lines say one system.
 - **A chord read as separate notes is one chord, and each voice under a beam is beamed** (`write.py` `_unlapped`,
   `_attach`). A left hand's bass note and chord in turn stand under one beam; the model reads the chord's notes as
   events of their own at one onset. Written in voices of their own they lost the beam, which went to the voice
