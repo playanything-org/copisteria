@@ -1844,9 +1844,19 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
             for i, st_ in enumerate(staves):        # a clef changed inside the bar is printed already
                 if st_ is not None and st_["marks"]["end_clef"]:
                     last["clefs"][i] = st_["marks"]["end_clef"]
+            closing_measure = meas
+            if mr and single_part and mr > 1:
+                for _ in range(mr - 1):
+                    number += 1
+                    closing_measure = _sub(part, "measure", number=number)
+                    ne = _sub(closing_measure, "note")
+                    _sub(ne, "rest", measure="yes")
+                    _sub(ne, "duration", units(bar_len))
+                    _sub(ne, "voice", 1)
             right = first["marks"]["right"]
             if right or pending_endings:
-                bl = _sub(meas, "barline", location="right")
+                # The printed closing barline follows the entire multi-bar rest.
+                bl = _sub(closing_measure, "barline", location="right")
                 if right:
                     _sub(bl, "bar-style", BAR_RIGHT[right])
                 for num in pending_endings:
@@ -1854,14 +1864,6 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                 if right == "barLine_repeat_end":
                     _sub(bl, "repeat", direction="backward")
                 pending_endings = []
-            if mr and single_part and mr > 1:
-                for _ in range(mr - 1):
-                    number += 1
-                    extra = _sub(part, "measure", number=number)
-                    ne = _sub(extra, "note")
-                    _sub(ne, "rest", measure="yes")
-                    _sub(ne, "duration", units(bar_len))
-                    _sub(ne, "voice", 1)
     if facts is not None:
         facts.update(plans=plans, place=place, columns=columns, built=built, bar_ends=bar_ends, untied=untied, div=div,
                      unvoiced=[[staff, bar, why] for (staff, bar), why in sorted(unvoiced.items())])

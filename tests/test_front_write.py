@@ -99,6 +99,29 @@ def _reading(L, tok):
     return Reading(layout=L, tok=tok)
 
 
+def test_a_counted_rest_closes_on_its_last_measure():
+    dets = staff_row(100, [0, 200, 400]) + [
+        det("multiRest", (65, 110, 145, 130)),
+        det("barLine_double", (194, 100, 200, 140)),
+        det("multiRest", (255, 110, 345, 130)),
+        det("barLine_repeat_end", (388, 100, 400, 140)),
+    ]
+    layout = front.build(dets, 420, 220)
+    tokens = _tokens(layout)
+    for sym in layout.syms:
+        if sym.cls in ("multiRest", "barLine_double", "barLine_repeat_end"):
+            tokens[sym.i] = {"real": {"p": 1.0, "det": 1.0, "ev": 0}, "cls": {"v": sym.cls}}
+    texts = [{"xyxy": (96, 89, 112, 104), "text": "3"}, {"xyxy": (288, 89, 304, 104), "text": "4"}]
+    root = ET.fromstring(write.write(_reading(layout, tokens), texts=texts).split("\n", 2)[2])
+    measures = root.findall(".//measure")
+    assert len(measures) == 7
+    assert [m.findtext("attributes/measure-style/multiple-rest") for m in measures] == ["3", None, None, "4", None, None, None]
+    assert [(m.get("number"), m.findtext("barline/bar-style")) for m in measures if m.find("barline") is not None] == [
+        ("3", "light-light"), ("7", "light-heavy")
+    ]
+    assert measures[6].find("barline/repeat").get("direction") == "backward"
+
+
 def test_write_one_bar():
     dets = staff_row(100, [0, 200]) + [det("note_quarter", (50, 115, 60, 125), staff_position=0),
                                       det("note_quarter", (100, 115, 110, 125), staff_position=2),
