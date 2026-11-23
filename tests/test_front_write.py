@@ -1509,6 +1509,50 @@ def test_a_system_shaped_as_two_of_another_on_the_page_is_two():
     assert front._repeats(syms, staves, linked, ["unclear"] * 7) == linked
 
 
+def _stacked_piano_page(monkeypatch, connector=False, shared_onsets=False, second_brace=True):
+    import numpy as np
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    heights = [100, 175, 240, 315]
+    page = np.full((430, 640), 255, np.uint8)
+    dets = []
+    for i, y in enumerate(heights):
+        page[y:y + 41:10, 58:561] = 0
+        for x in (230, 400, 560):
+            page[y:y + 41, x] = 0
+        dets += staff_row(y, [58, 230, 400, 560])
+        dets.append(det("clef_G2" if i % 2 == 0 else "clef_F4", (64, y - 1, 85, y + 41)))
+        xs = [103, 151, 191, 257, 307, 365, 435, 480, 528]
+        if i >= 2 and not shared_onsets:
+            xs = [x + 18 for x in xs]
+        dets.extend(det("note_quarter", (x - 4, y + 16, x + 4, y + 24), staff_position=0) for x in xs)
+    page[100:216, 58] = page[240:356, 58] = 0
+    page[216:240 if connector else 232, 58] = 0
+    for x in (230, 400, 560):
+        page[100:216, x] = page[240:356, x] = 0
+    dets.append(det("grpSym_brace", (47, 100, 59, 215)))
+    if second_brace:
+        dets.append(det("grpSym_brace", (47, 240, 59, 355)))
+    return dets, page
+
+
+def test_two_repeated_grand_staves_are_two_systems_even_with_equal_bar_widths(monkeypatch):
+    dets, page = _stacked_piano_page(monkeypatch)
+    for hint in (None, [4], [2, 2]):
+        layout = front.build(dets, 640, 430, image=page, layout=hint)
+        assert [s.staves for s in layout.systems] == [[0, 1], [2, 3]]
+    root = ET.fromstring(write.write(_reading(layout, _tokens(layout))).split("\n", 2)[2])
+    assert len(root.findall("./part")) == 1
+    assert len(root.findall("./part/measure")) == 6
+
+
+def test_two_staff_groups_stay_together_on_shared_ink_or_onsets(monkeypatch):
+    for options in ({"connector": True}, {"shared_onsets": True}, {"second_brace": False}):
+        dets, page = _stacked_piano_page(monkeypatch, **options)
+        layout = front.build(dets, 640, 430, image=page)
+        assert [s.staves for s in layout.systems] == [[0, 1, 2, 3]]
+
+
 def test_percussion_staves_of_one_or_two_lines_three_spaces_apart_are_each_a_staff():
     from copisteria.vision.page.staves import Line
     staves = [front.Staff(bars=[], sp=10.0, y0=100.0, y1=140.0, x0=0.0, x1=400.0)]

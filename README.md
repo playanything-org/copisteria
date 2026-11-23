@@ -51,6 +51,13 @@ Reading (what a page's MusicXML holds):
   one voice's two lines were written as two parts at once. A layout now parts such a join where no brace or bracket
   spans it, the two staves' bar lines plainly do not line up, and neither the staves around it nor the two sides'
   grid of bar lines say one system.
+- **Successive systems keep their own staves** (`front.py` `_stacked`). Tight spacing and ink near the left
+  margin can leave a gap uncertain even though no opening line or barline crosses it. Where the opening clefs
+  and brace positions repeat a complete staff pattern, the front end puts the boundary before bar segmentation
+  and part planning. A visible connector, a group symbol across the gap or shared note onsets keep the staves
+  together. A matching prefix can begin a cropped last system where the page also shows its complete pattern.
+  On a page of solo systems a lone ambiguous pair can be separated by the surrounding spacing and its own
+  conflicting bar grids.
 - **A chord read as separate notes is one chord, and each voice under a beam is beamed** (`write.py` `_unlapped`,
   `_attach`). A left hand's bass note and chord in turn stand under one beam; the model reads the chord's notes as
   events of their own at one onset. Written in voices of their own they lost the beam, which went to the voice

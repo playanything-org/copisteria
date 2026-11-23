@@ -817,6 +817,127 @@ def _repeats(syms: list[Sym], staves: list[Staff], linked: list[bool], said: lis
     return out
 
 
+def _same_onsets(syms: list[Sym], upper: list[Staff], lower: list[Staff]) -> bool:
+    """A shared beat grid is evidence for a system even where its opening line is faint."""
+    def notes(st):
+        return [s.cx for s in syms if s.fam == "note" and s.p >= 0.5 and
+                st.x0 <= s.cx <= st.x1 and st.y0 - st.sp <= s.cy <= st.y1 + st.sp]
+
+    above, below = upper[-AROUND:], lower[:AROUND]
+    note_x = {id(st): notes(st) for st in above + below}
+    matches = []
+    for a, b in itertools.product(above, below):
+        few, many = sorted((note_x[id(a)], note_x[id(b)]), key=len)
+        if len(few) < 6:
+            continue
+        sp = (a.sp + b.sp) / 2
+        offsets = sorted(min(many, key=lambda y: abs(y - x)) - x for x in few)
+        shift = offsets[len(offsets) // 2]
+        if abs(shift) > sp:
+            continue
+        few = [x + shift for x in few]
+        if (sum(any(abs(x - y) <= 0.5 * sp for y in many) for x in few) >= 0.85 * len(few)
+                and sum(any(abs(x - y) <= 0.5 * sp for x in few) for y in many) >= 0.5 * len(many)):
+            if a is above[-1] and b is below[0]:
+                return True
+            matches.append((a, b))
+    # One regular accompaniment can line up coincidentally with several other staves.
+    return any(a is not u and b is not v for (a, b), (u, v) in itertools.combinations(matches, 2))
+
+
+def _stacked(syms: list[Sym], staves: list[Staff], linked: list[bool], said: list[str],
+             mask, height: int) -> list[bool]:
+    """Resolve an ambiguous link when the complete staff pattern starts over.
+
+    The gap can be smaller than the gaps inside either system when the engraver fits two
+    systems onto the page. A physical connector or shared note onsets take precedence.
+    A short last system can repeat the top of a known complete pattern if the page cuts it off.
+    """
+    boundaries = [0, *(i + 1 for i, joined in enumerate(linked) if not joined), len(staves)]
+    uncertain = {i for i in range(1, len(staves)) if linked[i - 1] and said[i - 1] == "unclear"
+                 and not _braced(syms, staves[i - 1], staves[i])}
+    if not uncertain:
+        return linked
+
+    def base_clef(st):
+        clef = _opening_clef(syms, st)
+        return "_".join(clef.split("_")[:2]) if clef else None
+
+    clefs = [base_clef(st) for st in staves]
+    braces = [any(s.cls == "grpSym_brace" and s.p >= 0.5 for s in syms if s.fam == "grpSym" and
+                  s.box[1] <= a.mid + a.sp and s.box[3] >= b.mid - b.sp and
+                  a.x0 - 6 * a.sp <= s.cx <= a.x0 + 3 * a.sp)
+              for a, b in zip(staves, staves[1:])]
+
+    def matches(a, b, size, missing=1):
+        pairs = [(x, y) for x, y in zip(clefs[a:a + size], clefs[b:b + size]) if x is not None and y is not None]
+        return len(pairs) >= max(2, size - missing) and all(x == y for x, y in pairs)
+
+    def complete(a, b, size, missing=1):
+        groups_a, groups_b = braces[a:a + size - 1], braces[b:b + size - 1]
+        return (matches(a, b, size, missing) and groups_a == groups_b
+                and (any(groups_a) or len(set(clefs[a:a + size]) - {None}) >= 2))
+
+    page_left = min(st.x0 for st in staves)
+
+    def can_part(a, cut, b):
+        upper, lower = staves[a:cut], staves[cut:b]
+        _, bars, _ = _ink_links(mask, syms, upper[-1], lower[0], page_left)
+        return bars == 0 and not _same_onsets(syms, upper, lower)
+
+    def solo_bars_differ(a, b):
+        # Check every observed internal edge. A skewed scan can make the line finder
+        # place a staff start in the middle of the staff and omit the left-hand bars.
+        edges = [[syms[i].box[2] for i in st.bars[:-1] if not syms[i].synthetic] for st in (a, b)]
+        tolerance = (a.sp + b.sp) / 2
+        few, many = sorted(edges, key=len)
+        return len(few) >= 3 and sum(any(abs(x - y) <= tolerance for y in many) for x in few) < 0.5 * len(few)
+
+    out = list(linked)
+    runs = list(zip(boundaries, boundaries[1:]))
+    solo_gaps = [(staves[b].y0 - staves[a].y1) / staves[a].sp for (a, b), (_, c) in zip(runs, runs[1:])
+                 if b - a == c - b == 1]
+    for a, b in runs:
+        if (b - a == 2 and a + 1 in uncertain and len(solo_gaps) >= 4
+                and all(y - x == 1 or x == a for x, y in runs)
+                and len({c for c in clefs if c is not None}) == 1 and sum(c is not None for c in clefs) >= 3):
+            gap = (staves[a + 1].y0 - staves[a].y1) / staves[a].sp
+            if (min(solo_gaps) <= gap <= max(solo_gaps) and solo_bars_differ(staves[a], staves[a + 1])
+                    and can_part(a, a + 1, b)):
+                out[a] = False
+            continue
+        options = []
+        for size in range(2, (b - a) // 2 + 1):
+            cuts = list(range(a + size, b, size))
+            if (b - a) % size or not all(cut in uncertain for cut in cuts):
+                continue
+            repeated = all(complete(a, cut, size) for cut in cuts)
+            # Another full system can corroborate a pattern with more than one missed clef.
+            repeated = repeated or (size >= 5 and all(complete(a, cut, size, 2) for cut in cuts)
+                                    and any(end - ref == size and complete(ref, a, size)
+                                            for ref, end in runs if ref != a))
+            if repeated and all(can_part(cut - size, cut, cut + size) for cut in cuts):
+                options.append(cuts)
+        if len(options) == 1:
+            for cut in options[0]:
+                out[cut - 1] = False
+
+    # The continuation is a prefix only at the foot of the page. Require a matching
+    # complete system immediately before the run, or a full repeat just established above.
+    boundaries = [0, *(i + 1 for i, joined in enumerate(out) if not joined), len(staves)]
+    if len(boundaries) >= 3:
+        start, a, b = boundaries[-3:]
+        size = a - start
+        cut = a + size
+        tail = b - cut
+        if (size >= 3 and 2 <= tail < size and cut in uncertain
+                and height - staves[-1].y1 <= 10 * staves[-1].sp
+                and complete(start, a, size) and matches(a, cut, tail)
+                and can_part(a, cut, b)):
+            out[cut - 1] = False
+    return out
+
+
 def _systems(syms: list[Sym], staves: list[Staff], gray=None, ink: bool = False, levels=None,
              linked: list[bool] | None = None) -> list[System]:
     """``gray``: the page's ink mask; ``levels``: its grey levels. ``linked``: per pair of neighbouring staves
@@ -1688,6 +1809,8 @@ def _with_layout(layout: list, syms: list[Sym], staves: list[Staff], spare: list
         if joined[k - 1] and not forced[k - 1] and not _line_alone(syms, fitted, k, why_joined, above(k), below(k)):
             return refused("the layout parts staves the page joins")
         if forced[k - 1] and not joined[k - 1]:
+            if why_joined[k - 1] == "restart":
+                return refused("the layout joins a repeated staff pattern across a system break")
             if _apart(syms, fitted[k - 1], fitted[k]) and not _joined_around(syms, above(k), below(k)) \
                     and not _one_grid(syms, above(k), below(k)):
                 return refused("the layout joins staves whose bar lines do not line up")
@@ -1777,13 +1900,21 @@ def build(dets: list[dict], width: float, height: float, image=None, cands: list
             lined = sorted((st for st in spare if st.lined and abs(st.sp - sp) <= near), key=lambda st: abs(st.sp - sp))
             spare[:] = ([st for st in spare if not st.lined] if ink_path else []) + lined
         before = list(staves)
-        prior, staves, linked = _with_layout(layout, syms, staves, spare, lambda sts: _links(syms, sts, mask, gray),
+        def page_links(sts):
+            links, said = _links(syms, sts, mask, gray)
+            if mask is None or len(sts) < 3:
+                return links, said
+            grouped = _stacked(syms, sts, links, said, mask, gray.shape[0])
+            return grouped, ["restart" if old and not new else why for old, new, why in zip(links, grouped, said)]
+
+        prior, staves, linked = _with_layout(layout, syms, staves, spare, page_links,
                                              add=ink_path or bool(spare), most=most, insist=insist)
         if not ink_path:
             _borrow_bars(syms, staves, before)
     shown = [sum(not syms[i].synthetic for i in st.bars) for st in staves]
     if linked is None and mask is not None and len(staves) > 2:
-        linked = _repeats(syms, staves, *_links(syms, staves, mask, gray))
+        linked, said = _links(syms, staves, mask, gray)
+        linked = _stacked(syms, staves, _repeats(syms, staves, linked, said), said, mask, gray.shape[0])
     systems = _systems(syms, staves, mask, ink=ink_path, levels=gray, linked=linked)
     if prior is not None and prior.get("joined") and not insist and _loses_bars(systems, shown, prior["joined"]):
         L = build(dets, width, height, image=image, cands=cands, cuts=cuts)           # the page as read without it
