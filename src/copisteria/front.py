@@ -631,6 +631,7 @@ def _meets_staves(mask, x: int, a: Staff, b: Staff) -> bool:
 
 PALE = 0.12                   # a pale line is at least this far from the paper toward the ink (_pale_line)
 PALE_BACK = 0.5               # and beside it the page is this much of its depth nearer its paper, or as much darker
+PALE_REACH = 1.5              # staff spaces a faint stroke can stand left of the measured staff starts
 
 
 def _pale_line(levels, paper: float, dark: float, a: Staff, b: Staff, page_left: float) -> float:
@@ -652,6 +653,11 @@ def _pale_at(levels, paper: float, dark: float, a: Staff, b: Staff, page_left: f
     if yb - ya < 2:
         return 0.0, -1
     lo, hi = _left_span(a, b, page_left, lines=True)
+    # A narrow rule or pen stroke in the margin can be as continuous as a systemic line.
+    # Where staff starts are visible, require the stroke to reach both.
+    starts = [round(st.line_x0 - PALE_REACH * st.sp) for st in (a, b) if st.line_x0 is not None]
+    if starts:
+        lo = max(lo, *starts)
     pale = levels[ya:yb] < paper - PALE * max(1.0, paper - dark)
     away = max(3, int(round((a.sp + b.sp) / 2)))
     # a line is narrow: within a quarter of a staff space to either side the page is half way back to the paper it

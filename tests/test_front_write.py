@@ -478,6 +478,22 @@ def test_the_edge_of_a_bindings_shadow_is_not_a_pale_line_and_a_lines_pale_shoul
     assert front._pale_line(shoulder, 255, 0, c, d, 384) > 0.9
 
 
+def test_a_detached_pale_margin_stroke_does_not_join_staves():
+    import numpy as np
+
+    page = np.full((800, 600), 255, np.uint8)
+    a = front.Staff(bars=[], sp=20, y0=200, y1=280, x0=95, x1=560, line_x0=100)
+    b = front.Staff(bars=[], sp=20, y0=440, y1=520, x0=95, x1=560, line_x0=100)
+    for st in (a, b):
+        for y in range(int(st.y0), int(st.y1) + 1, 20):
+            page[y, 100:561] = 0
+    detached = page.copy()
+    detached[190:530, 52] = 207
+    assert front._pale_at(detached, 255, 0, a, b, 95, [a, b])[0] == 0
+    page[200:521, 99] = 207
+    assert front._pale_at(page, 255, 0, a, b, 95, [a, b])[0] > 0.9
+
+
 def test_a_pale_opening_line_joins_two_staves_and_a_white_gap_does_not():
     import numpy as np
     from PIL import Image

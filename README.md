@@ -62,7 +62,9 @@ Reading (what a page's MusicXML holds):
   page's whole height, with paper a staff space to either side, and every staff of the page was joined into one
   system (a part's eight lines read as eight instruments playing at once; 29 pages of one upload). A line now counts
   only where the page changes within a quarter of a staff space of it, back toward its paper or into darker ink,
-  and where it does not go on past the page's first staff and past its last, as no system's line does.
+  and where it does not go on past the page's first staff and past its last, as no system's line does. When the
+  staff-line starts are visible, pale opening ink must also lie within one and a half staff spaces of those starts.
+  This keeps a detached margin stroke from joining successive systems.
 - **A staff the measure boxes make twice is one staff** (`front.py` `_clear_rows`). Where the line finder finds no
   staves (a photograph taken by hand), the staves are the rows of the detector's measure boxes, and it boxes a
   tilted or blurred staff's bars at two heights: two rows, one printed staff, and a system of three staves where two
