@@ -370,6 +370,43 @@ def _tokens(L, clef=lambda s: "G2"):
     return tok
 
 
+def test_dynamics_need_ink_support_when_the_reader_is_unsure(monkeypatch):
+    import numpy as np
+    from copisteria import links
+
+    monkeypatch.setattr(links, "load", lambda: None)
+    dets = staff_row(130, [25, 235, 445], sp=12)
+    dets += [det("note_quarter", (x, 149, x + 12, 161)) for x in (55, 145, 265, 355)]
+    dets += [det("dynam_f", (90, 195, 118, 223), 0.74),    # thin ink in the lyric lane
+             det("dynam_mp", (175, 195, 205, 223), 0.5),  # thick ink supporting a weak reading
+             det("dynam_p", (217, 195, 245, 223), 0.3),   # thin ink with strong evidence for the glyph
+             det("dynam_ff", (405, 22, 434, 43), 0.55)]  # far above the system
+    layout = front.build(dets, 480, 320)
+    tokens = _tokens(layout)
+    for symbol in layout.syms:
+        if symbol.fam == "dynam":
+            tokens[symbol.i]["cls"] = {"v": symbol.cls, "p": 0.97 if symbol.cls == "dynam_p" else 0.55}
+    reading = _reading(layout, tokens)
+    page = np.full((320, 480), 255, np.uint8)
+    page[197:220, 97] = 0
+    page[204, 95:116] = 0
+    page[195:219, 180:185] = 0
+    page[200:208, 180:198] = 0
+    page[199:215, 35:83] = 0  # nearby text brings local black and white into the contrast estimate
+    page[199:220, 228] = 0
+    page[198:201, 228:236] = 0
+    page[207:209, 228:236] = 0
+    page[199:208, 235] = 0
+    page[26:41, 411:430] = 0
+
+    def labels(image):
+        xml = ET.fromstring(write.write(reading, image=image))
+        return sorted(mark.tag for mark in xml.findall(".//dynamics/*"))
+
+    assert labels(None) == ["f", "ff", "mp", "p"]
+    assert labels(page) == ["mp", "p"]
+
+
 def test_a_pedal_mark_is_written_under_a_keyboard_and_not_under_a_part_of_one_staff(monkeypatch):
     from copisteria import links
     monkeypatch.setattr(links, "load", lambda: None)

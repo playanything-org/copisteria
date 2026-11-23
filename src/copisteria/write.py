@@ -419,7 +419,69 @@ def _counted_rest_columns(rd, texts, rest_counts):
     return result
 
 
-def _events(rd: Reading, staff: int, bar: int, clef: str, key: int, texts) -> tuple[list[Event], list, dict]:
+def _thin_dynamic_ink(gray, box, space, confidence):
+    """Test a weak letter dynamic's stroke width and slant against the local staff space.
+
+    The strip of nearby ink supplies the dark and light levels even when the glyph box holds mostly paper.
+    A low-contrast strip gives no verdict.
+    """
+    import cv2
+    import numpy as np
+
+    height, width = gray.shape
+    x0, y0, x1, y1 = box
+    left, top = max(0, math.floor(x0 - 14 * space)), max(0, math.floor(y0 - 1.5 * space))
+    right, bottom = min(width, math.ceil(x1 + 14 * space)), min(height, math.ceil(y1 + 1.5 * space))
+    strip = gray[top:bottom, left:right]
+    glyph = gray[max(0, math.floor(y0)):min(height, math.ceil(y1)),
+                 max(0, math.floor(x0)):min(width, math.ceil(x1))]
+    if not strip.size or not glyph.size:
+        return False
+    dark, light = np.percentile(strip, (3, 50))
+    if light - dark < 40:
+        return False
+    ink = np.uint8(glyph <= dark + 0.61 * (light - dark))
+    radii = cv2.distanceTransform(np.pad(ink, 1), cv2.DIST_L2, 5)[1:-1, 1:-1][ink != 0]
+    if not radii.size:
+        return True
+    stroke = np.percentile(radii, 85) / space
+    if stroke < 0.12:
+        return True
+    if confidence >= 0.65 or stroke >= 0.14 or ink.shape[0] < 4:
+        return False
+    third = ink.shape[0] // 3
+    upper = np.nonzero(ink[:third])[1]
+    lower = np.nonzero(ink[-third:])[1]
+    return len(upper) >= 3 and len(lower) >= 3 and np.median(upper) - np.median(lower) < 0.35 * space
+
+
+def _unsupported_dynamics(rd, gray):
+    """Symbols the writer leaves out when the page contradicts a weak detector reading of a letter dynamic."""
+    if gray is None or not rd.layout.systems:
+        return set()
+    layout = rd.layout
+    system_bands = [(min(layout.staves[k].y0 for k in system.staves), max(layout.staves[k].y1 for k in system.staves))
+                    for system in layout.systems]
+    unsupported = set()
+    for symbol in layout.syms:
+        if symbol.staff < 0 or symbol.p >= 0.80 or not _real(rd, symbol.i):
+            continue
+        reading = rd.tok[symbol.i]["cls"]
+        kind = reading["v"]
+        if not kind.startswith("dynam_") or kind[len("dynam_"):] not in DYN:
+            continue
+        staff = layout.staves[symbol.staff]
+        if staff.system < 0:
+            continue
+        y0, y1 = system_bands[staff.system]
+        outside = max(y0 - symbol.box[3], symbol.box[1] - y1) > 6 * staff.sp
+        if outside or (reading.get("p", 0) < 0.90 and _thin_dynamic_ink(gray, symbol.box, staff.sp, symbol.p)):
+            unsupported.add(symbol.i)
+    return unsupported
+
+
+def _events(rd: Reading, staff: int, bar: int, clef: str, key: int, texts,
+            unsupported_dynamics=frozenset()) -> tuple[list[Event], list, dict]:
     """The bar's events, plus its directions [(x, kind, payload)] and bar-line marks."""
     L = rd.layout
     st = L.staves[staff]
@@ -468,7 +530,7 @@ def _events(rd: Reading, staff: int, bar: int, clef: str, key: int, texts) -> tu
             events.append(Event(x=s.cx, kind="mrest", voice=1, si=s.i))
         elif f in ("mRpt", "multiRpt"):
             marks["repeat_bar"] = True
-        elif f == "dynam" and c[len("dynam_"):] in DYN:
+        elif f == "dynam" and c[len("dynam_"):] in DYN and s.i not in unsupported_dynamics:
             dirs.append((s.cx, "dyn", c[len("dynam_"):], s.cy > st.mid))
         elif f == "hairpin" and c in ("hairpin_cres", "hairpin_dim"):
             pins.append((s.box[0], s.box[2], "crescendo" if c == "hairpin_cres" else "diminuendo", s.cy > st.mid))
@@ -1524,6 +1586,11 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
     off the H-bars, by box, when supplied instead of OCR text. ``facts["rest_columns"]`` records the count written in
     every part or why a count was set aside, by (system, column)."""
     L = rd.layout
+    gray = None
+    if image is not None:
+        import numpy as np
+        gray = np.asarray(image.convert("L") if hasattr(image, "convert") else image)
+    unsupported_dynamics = _unsupported_dynamics(rd, gray)
     plans = _plan_parts(rd)
     texts = texts or []
     # per system: place (in the fullest system) -> staff
@@ -1606,12 +1673,12 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                         first[k_i] = False
                         if opening is not None:
                             state[k_i]["time"] = opening
-                    ev, dirs, marks = _events(rd, staff, j, state[k_i]["clef"], state[k_i]["key"], texts)
+                    ev, dirs, marks = _events(rd, staff, j, state[k_i]["clef"], state[k_i]["key"], texts, unsupported_dynamics)
                     if (s_i, c) in expansions and ev and ev[0].kind == "rest":
                         # A whole-rest glyph here stands for a whole measure in any meter.
                         ev[0] = Event(x=ev[0].x, kind="mrest", voice=1, si=ev[0].si)
                     for j2 in bars[1:]:            # two boxes of this staff under one column: one bar
-                        ev2, dirs2, marks2 = _events(rd, staff, j2, state[k_i]["clef"], state[k_i]["key"], texts)
+                        ev2, dirs2, marks2 = _events(rd, staff, j2, state[k_i]["clef"], state[k_i]["key"], texts, unsupported_dynamics)
                         ev += ev2; dirs += dirs2
                         marks["right"] = marks2["right"] or marks["right"]
                         marks["endings"] += marks2["endings"]
@@ -1687,11 +1754,9 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
             partner.alter = e.alter
 
     mask = None
-    if image is not None:
-        import numpy as np
-
+    if gray is not None:
         from .front import ink_mask
-        mask = ink_mask(np.asarray(image.convert("L") if hasattr(image, "convert") else image))
+        mask = ink_mask(gray)
     _attach(rd, built, plans, texts, place, mask)
 
     # each bar column is as long as most staves make it; a voice running past that is cut there

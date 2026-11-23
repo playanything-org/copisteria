@@ -17,6 +17,10 @@ reads and how to use it, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) here f
 
 Reading (what a page's MusicXML holds):
 
+- **Letter dynamics need ink support when the reading is weak** (`write.py` `_unsupported_dynamics`). The detector
+  can mistake lyrics, handwritten strokes and publisher marks for dynamics. The writer uses their distance from the
+  system and the stroke width and slant of the boxed ink, measured in staff spaces. Confident detector readings
+  stay. In the music, strong contextual readings and areas with too little contrast protect thin printed marks.
 - **A staff the line finder finds twice is one staff** (`front.py` `_without_doubles`). On a scan that bows or tilts,
   a staff line is two runs of rows and the finder groups each set of five into a staff, half a space apart. The
   system then held a staff the page does not print, and the page's parts were planned on it.
