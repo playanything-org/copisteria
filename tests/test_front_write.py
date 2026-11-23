@@ -122,6 +122,61 @@ def test_a_counted_rest_closes_on_its_last_measure():
     assert measures[6].find("barline/repeat").get("direction") == "backward"
 
 
+def test_counted_rests_lengthen_the_same_column_in_every_part(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    edges = [0, 180, 360, 540, 720]
+    rows = staff_row(100, edges) + staff_row(180, edges)
+    upper = [det("multiRest", (55 + x, 113, 125 + x, 128)) for x in edges[:-1]]
+    lower = [det("mRest_measure", (85, 192, 97, 201)),
+             det("multiRest", (235, 193, 305, 208)),
+             det("note_quarter", (445, 193, 457, 207)),
+             det("multiRest", (595, 193, 665, 208))]
+    layout = front.build(rows + upper + lower, 760, 280)
+    assert [s.staves for s in layout.systems] == [[0, 1]]
+    tokens = _tokens(layout)
+    texts = []
+    for sym in layout.syms:
+        if sym.cls in ("multiRest", "mRest_measure"):
+            tokens[sym.i]["cls"]["v"] = sym.cls
+        if sym.cls == "multiRest" and (sym.staff == 0 or sym.bar == 3):
+            x, y = sym.cx, sym.box[1]
+            texts.append({"xyxy": (x - 4, y - 16, x + 4, y - 6), "text": "4" if sym.staff == 1 else "3"})
+    facts = {}
+    root = ET.fromstring(write.write(_reading(layout, tokens), texts=texts, facts=facts).split("\n", 2)[2])
+    for part in root.findall("part"):
+        measures = part.findall("measure")
+        assert len(measures) == 8
+        assert [i for i, m in enumerate(measures, 1)
+                if m.findtext("attributes/measure-style/multiple-rest") == "3"] == [1, 4]
+        assert all(m.find("note/rest[@measure='yes']") is not None for m in measures[:6])
+    assert len(root.findall(".//pitch")) == 1
+    assert root.find("./part[@id='P2']/measure[@number='7']/note/pitch") is not None
+    assert facts["rest_columns"] == {(0, 0): 3, (0, 1): 3, (0, 2): "music", (0, 3): "disagreement"}
+
+
+def test_counted_rest_on_lower_staff_fills_both_staves_of_a_grand_staff(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    rows = staff_row(100, [0, 200]) + staff_row(180, [0, 200])
+    layout = front.build(rows + [det("grpSym_brace", (0, 100, 8, 220)),
+                                det("mRest_measure", (95, 113, 106, 125)),
+                                det("multiRest", (65, 193, 145, 208))], 230, 260)
+    tokens = _tokens(layout)
+    for sym in layout.syms:
+        if sym.cls in ("mRest_measure", "multiRest"):
+            tokens[sym.i]["cls"]["v"] = sym.cls
+    root = ET.fromstring(write.write(_reading(layout, tokens), texts=[{"xyxy": (101, 182, 109, 188), "text": "3"}]).split("\n", 2)[2])
+    assert len(root.findall("part")) == 1
+    assert root.findtext("./part/measure/attributes/staves") == "2"
+    assert root.findtext("./part/measure/attributes/measure-style/multiple-rest") == "3"
+    assert len(root.findall("./part/measure")) == 3
+    for measure in root.findall("./part/measure"):
+        assert [n.findtext("staff") for n in measure.findall("note")] == ["1", "2"]
+        assert len(measure.findall("note/rest[@measure='yes']")) == 2
+        assert measure.findtext("backup/duration") == "4"
+
+
 def test_write_one_bar():
     dets = staff_row(100, [0, 200]) + [det("note_quarter", (50, 115, 60, 125), staff_position=0),
                                       det("note_quarter", (100, 115, 110, 125), staff_position=2),

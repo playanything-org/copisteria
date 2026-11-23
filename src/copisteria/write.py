@@ -376,6 +376,49 @@ def _texts_near(texts, box, sp):
     return None
 
 
+def _counted_rest_columns(rd, texts, rest_counts):
+    """Resolve one duration for each counted rest on the shared system grid."""
+    layout = rd.layout
+    rhythms, votes = {}, {}
+    rhythmic = {"note", "rest", "mRest", "multiRest", "mRpt", "multiRpt"}
+    for symbol in layout.syms:
+        if symbol.staff < 0 or symbol.bar < 0 or symbol.fam == "measure" or not _real(rd, symbol.i):
+            continue
+        cls = _cls(rd, symbol.i)
+        family = _fam(cls)
+        if family not in rhythmic:
+            continue
+        rhythms.setdefault((symbol.staff, symbol.bar), []).append("measure-rest" if family in {"mRest", "multiRest"}
+                                                                  or cls == "rest_whole" else cls)
+        if family == "multiRest":
+            staff = layout.staves[symbol.staff]
+            count = (_texts_near(texts, symbol.box, staff.sp) if rest_counts is None
+                     else rest_counts.get(symbol.box))
+            if count and count > 1:
+                votes.setdefault((staff.system, layout.column(symbol.staff, symbol.bar)), set()).add(count)
+
+    result = {}
+    for (system, column), counts in votes.items():
+        key = system, column
+        if len(counts) != 1:
+            result[key] = "disagreement"
+            continue
+        current = layout.systems[system]
+        local = [cols.index(column) for cols in current.columns if cols.count(column) == 1]
+        if len(local) != len(current.staves):
+            result[key] = "unaligned"
+            continue
+        bars = list(zip(current.staves, local))
+        evidence = [rhythms.get(bar, []) for bar in bars]
+        if any(items and items != ["measure-rest"] for items in evidence):
+            result[key] = "music"
+        elif not all(evidence):
+            result[key] = "unconfirmed"
+        else:
+            result[key] = next(iter(counts))
+    return result
+
+
 def _events(rd: Reading, staff: int, bar: int, clef: str, key: int, texts) -> tuple[list[Event], list, dict]:
     """The bar's events, plus its directions [(x, kind, payload)] and bar-line marks."""
     L = rd.layout
@@ -1463,7 +1506,7 @@ def _part_names(rd: Reading, plans: list, texts: list, place: list) -> list[str 
 
 def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None, image=None,
           facts: dict | None = None, align: bool = True, roster: list[int] | None = None,
-          clefs: list | None = None, among: list | None = None) -> str:
+          clefs: list | None = None, among: list | None = None, rest_counts: dict | None = None) -> str:
     """``image``: the page (PIL image or grey array), for what is read off the ink here (dashes after words).
     ``align``: False counts every system's staves into the parts from the top, whatever they say (as the writer
     did before _align_systems), for a caller that places a system's staves itself.
@@ -1477,7 +1520,9 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
     staff: _align_systems), ``columns`` ((system, column) of each measure), ``built`` (per part, per measure, its
     staves' events as written; a measure's ``number``, and per staff ``cut``, what _chop dropped or shortened, and
     ``fill``, (voice, start, length) of each rest written unprinted for time no event was read in), ``bar_ends``,
-    ``untied`` ((note, partner or None) of each tie read and not written) and ``div``."""
+    ``untied`` ((note, partner or None) of each tie read and not written) and ``div``. ``rest_counts``: counts read
+    off the H-bars, by box, when supplied instead of OCR text. ``facts["rest_columns"]`` records the count written in
+    every part or why a count was set aside, by (system, column)."""
     L = rd.layout
     plans = _plan_parts(rd)
     texts = texts or []
@@ -1518,7 +1563,8 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
     for s_i, sy in enumerate(L.systems):
         ncol = 1 + max((max(c) for c in sy.columns if c), default=-1)
         columns += [(s_i, c) for c in range(ncol)]
-    single_part = len(plans) == 1
+    rest_columns = _counted_rest_columns(rd, texts, rest_counts) if texts or rest_counts else {}
+    expansions = {column: count for column, count in rest_columns.items() if isinstance(count, int)}
     pitched_clefs = _pitched_clefs(rd, plans, place)
 
     unvoiced: dict = {}                 # (staff, bar) -> why the writer could not voice it (`build`)
@@ -1561,6 +1607,9 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                         if opening is not None:
                             state[k_i]["time"] = opening
                     ev, dirs, marks = _events(rd, staff, j, state[k_i]["clef"], state[k_i]["key"], texts)
+                    if (s_i, c) in expansions and ev and ev[0].kind == "rest":
+                        # A whole-rest glyph here stands for a whole measure in any meter.
+                        ev[0] = Event(x=ev[0].x, kind="mrest", voice=1, si=ev[0].si)
                     for j2 in bars[1:]:            # two boxes of this staff under one column: one bar
                         ev2, dirs2, marks2 = _events(rd, staff, j2, state[k_i]["clef"], state[k_i]["key"], texts)
                         ev += ev2; dirs += dirs2
@@ -1667,6 +1716,22 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
     def units(q: Fraction) -> int:
         return max(0, round(q * div))
 
+    def full_rest(measure, duration, staff, staff_count):
+        note = _sub(measure, "note")
+        _sub(note, "rest", measure="yes")
+        _sub(note, "duration", duration)
+        _sub(note, "voice", 1 + 4 * staff)
+        if staff_count > 1:
+            _sub(note, "staff", staff + 1)
+
+    def silent_measure(measure, duration, staff_count):
+        for staff in range(staff_count):
+            if staff:
+                _sub(_sub(measure, "backup"), "duration", duration)
+            full_rest(measure, duration, staff, staff_count)
+
+    rest_times = {i: next(staff["state"]["time"] for part in built for staff in part[i]["staves"] if staff is not None)
+                  for i, column in enumerate(columns) if column in expansions}
     for n, (pl, measures) in enumerate(zip(plans, built)):
         part = _sub(root, "part", id=f"P{n + 1}")
         last = {"key": None, "time": None, "clefs": [None] * len(pl.staves)}
@@ -1679,7 +1744,9 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
             staves = m["staves"]
             first = next((s for s in staves if s), None)
             meas = _sub(part, "measure", number=number)
+            mr = expansions.get(columns[m_i])
             if first is None:
+                attrs = None
                 if m_i == 0:
                     # a part that enters late (a piano under a choir's a cappella opening) still gives its staves in
                     # its first bar: a reader sets the part up from there (Verovio crashes on a staff 2 it never saw)
@@ -1687,12 +1754,21 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                     _sub(attrs, "divisions", div)
                     if len(pl.staves) > 1:
                         _sub(attrs, "staves", len(pl.staves))
+                if mr:
+                    if attrs is None:
+                        attrs = _sub(meas, "attributes")
+                    _sub(_sub(attrs, "measure-style"), "multiple-rest", mr)
+                    duration = units(_time_len(last["time"] or rest_times[m_i]))
+                    silent_measure(meas, duration, len(pl.staves))
+                    for _ in range(mr - 1):
+                        number += 1
+                        silent_measure(_sub(part, "measure", number=number), duration, len(pl.staves))
                 continue
             key, time = first["state"]["key"], first["state"]["time"]
             clefs = [s["state"]["clef"] if s else last["clefs"][i] for i, s in enumerate(staves)]
             attrs = None
             if m_i == 0 or key != last["key"] or time != last["time"] or clefs != last["clefs"] or \
-                    first["marks"]["multirest"]:
+                    first["marks"]["multirest"] or mr:
                 attrs = _sub(meas, "attributes")
                 if m_i == 0:
                     _sub(attrs, "divisions", div)
@@ -1718,8 +1794,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                         if octc:
                             _sub(ce, "clef-octave-change", octc)
             last.update(key=key, time=time, clefs=clefs)
-            mr = first["marks"]["multirest"]
-            if mr and single_part and mr > 1:
+            if mr:
                 ms = _sub(attrs, "measure-style")
                 _sub(ms, "multiple-rest", mr)
             bar_len = _time_len(time)
@@ -1743,6 +1818,11 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
             max_end = Fraction(0)
             for k_i, st in enumerate(staves):
                 if st is None:
+                    if mr:
+                        if pos_q:
+                            _sub(_sub(meas, "backup"), "duration", units(pos_q))
+                        full_rest(meas, units(bar_end), k_i, len(pl.staves))
+                        pos_q = bar_end
                     continue
                 staff_no = k_i + 1
                 vs = st["voices"]
@@ -1845,14 +1925,11 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                 if st_ is not None and st_["marks"]["end_clef"]:
                     last["clefs"][i] = st_["marks"]["end_clef"]
             closing_measure = meas
-            if mr and single_part and mr > 1:
+            if mr:
                 for _ in range(mr - 1):
                     number += 1
                     closing_measure = _sub(part, "measure", number=number)
-                    ne = _sub(closing_measure, "note")
-                    _sub(ne, "rest", measure="yes")
-                    _sub(ne, "duration", units(bar_len))
-                    _sub(ne, "voice", 1)
+                    silent_measure(closing_measure, units(bar_len), len(pl.staves))
             right = first["marks"]["right"]
             if right or pending_endings:
                 # The printed closing barline follows the entire multi-bar rest.
@@ -1866,6 +1943,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                 pending_endings = []
     if facts is not None:
         facts.update(plans=plans, place=place, columns=columns, built=built, bar_ends=bar_ends, untied=untied, div=div,
+                     rest_columns=rest_columns,
                      unvoiced=[[staff, bar, why] for (staff, bar), why in sorted(unvoiced.items())])
         if roster is not None:
             facts["roster"] = unexplained

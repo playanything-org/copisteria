@@ -156,6 +156,10 @@ What a caller may tell the front end (`front.py` `build`, `read.py` `read`; with
 
 What a caller may ask of the writer (`write.py` `write`; without these arguments the MusicXML is unchanged):
 
+- **`rest_counts`**: counts matched to H-bar boxes by the caller. The writer also accepts OCR text over an H-bar.
+  A count extends the shared column only when every printed staff has one bar with a whole-bar rest and the read
+  counts agree. The writer uses the same number of bars in every part and records its decisions in
+  `facts["rest_columns"]`.
 - **`facts`**: a dict that is given what the writer decided and the MusicXML does not say: the part plan, each
   system's places, the measures as events, what `_chop` dropped or shortened, the rests written unprinted for time
   no event was read in, and the ties read and not written.
