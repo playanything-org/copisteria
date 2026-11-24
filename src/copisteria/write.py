@@ -328,8 +328,10 @@ def _bar_state(rd: Reading, staff: int, bar: int, prev: dict) -> dict:
     return state
 
 
-def _clefs_after_bar_rests(rd: Reading) -> dict[tuple[int, int], str]:
-    """A pitched clef just before the closing line of a bar rest starts the next bar."""
+def _clefs_after_bar_rests(rd: Reading, mask=None) -> dict[tuple[int, int], tuple[str, bool]]:
+    """The next bar's clef and whether a whole-rest event already carries it."""
+    from .front import _ink_run
+
     layout = rd.layout
     by_bar: dict[tuple[int, int], list] = {}
     lines: dict[int, list] = {}
@@ -358,20 +360,25 @@ def _clefs_after_bar_rests(rd: Reading) -> dict[tuple[int, int], str]:
         _, _, edge, _ = layout.bar_box(s.staff, s.bar)
         if not (s.cx < edge and -0.25 * staff.sp <= edge - s.box[2] <= staff.sp):
             continue
-        # A line can join several staves and be assigned to only one of them.
-        if not any(abs(line.cx - edge) <= 0.5 * staff.sp and
-                   (line.staff == s.staff or (line.box[1] <= staff.y0 + 0.5 * staff.sp and
-                                              line.box[3] >= staff.y1 - 0.5 * staff.sp))
-                   for line in lines.get(staff.system, ())):
-            continue
         music = [b for b in by_bar[(s.staff, s.bar)] if _fam(_cls(rd, b.i)) != "clef"]
-        if not music or any(_fam(_cls(rd, b.i)) not in ("mRest", "multiRest") or b.cx >= s.cx for b in music):
+        whole_rest = len(music) == 1 and _cls(rd, music[0].i) == "rest_whole"
+        if not music or any(b.cx >= s.cx for b in music):
+            continue
+        if not whole_rest and any(_fam(_cls(rd, b.i)) not in ("mRest", "multiRest") for b in music):
+            continue
+        # A line can be shared by several staves or recovered by the front end from ink.
+        detected = any(abs(line.cx - edge) <= 0.5 * staff.sp and
+                       (line.staff == s.staff or (line.box[1] <= staff.y0 + 0.5 * staff.sp and
+                                                  line.box[3] >= staff.y1 - 0.5 * staff.sp))
+                       for line in lines.get(staff.system, ()))
+        if not detected and (not layout.ink or mask is None or
+                             _ink_run(mask, edge, staff.y0 + 1, staff.y1 - 1, reach=1) < 0.9):
             continue
         following = by_bar.get(nxt, ())
         first_music = min((b.cx for b in following if _fam(_cls(rd, b.i)) != "clef"), default=math.inf)
         if any(b.fam == "clef" and b.cx < first_music and _fam(_cls(rd, b.i)) == "clef" for b in following):
             continue
-        out[nxt] = _clef_of_cls(s.cls)
+        out[nxt] = (_clef_of_cls(s.cls), whole_rest)
     return out
 
 
@@ -1656,10 +1663,13 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
     off the H-bars, by box, when supplied instead of OCR text. ``facts["rest_columns"]`` records the count written in
     every part or why a count was set aside, by (system, column)."""
     L = rd.layout
-    gray = None
+    gray = mask = None
     if image is not None:
         import numpy as np
+        from .front import ink_mask
+
         gray = np.asarray(image.convert("L") if hasattr(image, "convert") else image)
+        mask = ink_mask(gray)
     unsupported_dynamics = _unsupported_dynamics(rd, gray)
     plans = _plan_parts(rd)
     texts = texts or []
@@ -1703,7 +1713,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
     rest_columns = _counted_rest_columns(rd, texts, rest_counts) if texts or rest_counts else {}
     expansions = {column: count for column, count in rest_columns.items() if isinstance(count, int)}
     pitched_clefs = _pitched_clefs(rd, plans, place)
-    clefs_after_rests = _clefs_after_bar_rests(rd)
+    clefs_after_rests = _clefs_after_bar_rests(rd, mask)
 
     unvoiced: dict = {}                 # (staff, bar) -> why the writer could not voice it (`build`)
 
@@ -1714,6 +1724,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
         all_durs: set = set()
         built = []
         fit: list = []
+        whole_rest_heads: dict[tuple[int, int], str] = {}
         unvoiced.clear()
         for n, pl in enumerate(plans):
             state = [{"key": 0, "time": "4/4", "clef": "G2"} for _ in pl.staves]
@@ -1737,13 +1748,14 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                     j = bars[0]
                     before = state[k_i]["clef"]
                     state[k_i] = _bar_state(rd, staff, j, state[k_i])
-                    boundary_clef = clefs_after_rests.get((staff, j))
-                    # The next head can repeat the old clef. A different new
-                    # clef already carried by that head has its own evidence.
-                    if boundary_clef and state[k_i]["clef"] == before:
-                        state[k_i]["clef"] = boundary_clef
                     if state[k_i]["clef"] == "perc" and (n, k_i) in pitched_clefs:
                         state[k_i]["clef"] = before if clef_read[k_i] and before != "perc" else pitched_clefs[(n, k_i)]
+                    if (staff, j) in clefs_after_rests:
+                        boundary_clef, whole_rest = clefs_after_rests[(staff, j)]
+                        # A repeated bar head can still describe the clef before the rest.
+                        stale_clef = whole_rest_heads.get((staff, j)) if whole_rest else before
+                        if state[k_i]["clef"] == stale_clef:
+                            state[k_i]["clef"] = boundary_clef
                     clef_read[k_i] = True
                     if first[k_i]:
                         first[k_i] = False
@@ -1783,6 +1795,11 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                     m["staves"].append({"staff": staff, "bar": j, "voices": vs, "read": read, "lanes": lanes,
                                         "dirs": dirs, "marks": marks, "state": dict(state[k_i])})
                     if marks["end_clef"]:                      # a clef inside the bar holds for the bars after it
+                        if clefs_after_rests.get((staff, j + 1)) == (marks["end_clef"], True) and len(ev) == 1:
+                            rest = ev[0]
+                            if rest.kind == "mrest" or (rest.kind == "rest" and
+                                    _duration(rest.typ, rest.dots, rest.tup) == _time_len(state[k_i]["time"])):
+                                whole_rest_heads[(staff, j + 1)] = state[k_i]["clef"]
                         state[k_i]["clef"] = marks["end_clef"]
                     for evs in vs.values():
                         all_durs.update(e.dur for e in evs)
@@ -1829,10 +1846,6 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
             partner.tie_stop = True
             partner.alter = e.alter
 
-    mask = None
-    if gray is not None:
-        from .front import ink_mask
-        mask = ink_mask(gray)
     _attach(rd, built, plans, texts, place, mask)
 
     # each bar column is as long as most staves make it; a voice running past that is cut there

@@ -183,6 +183,39 @@ def test_a_rest_boundary_clef_requires_a_written_rest_and_yields_to_a_printed_cl
         assert measures[1].findtext("note/pitch/step") == "B"
 
 
+def test_a_whole_rest_keeps_its_closing_clef_and_an_ink_barline_can_confirm_the_boundary(monkeypatch):
+    import numpy as np
+    from copisteria import links
+
+    monkeypatch.setattr(links, "load", lambda: None)
+    for ordinary in (True, False):
+        dets = staff_row(100, [20, 200, 400, 600]) + [
+            det("rest_whole" if ordinary else "mRest_measure", (98, 110, 111, 117)),
+            det("clef_G2", (175, 94, 193, 145)),
+        ]
+        dets += [det("note_quarter", (x - 5, 116, x + 5, 124))
+                 for x in (241, 281, 321, 361, 441, 481, 521, 561)]
+        image = None
+        if ordinary:
+            dets.append(det("barLine_single", (199, 100, 201, 140)))
+        else:
+            image = np.full((240, 620), 255, np.uint8)
+            for y in range(100, 141, 10):
+                image[y, 20:600] = 0
+            for x in (200, 400, 599):
+                image[100:141, x] = 0
+        layout = front.build(dets, 620, 240, image=image)
+        tokens = _tokens(layout, clef=lambda s: "F4" if s.bar < 2 else None)
+        for s in layout.syms:
+            if s.fam != "measure":
+                tokens[s.i]["cls"]["v"] = s.cls
+        root = ET.fromstring(write.write(_reading(layout, tokens), image=image))
+        rest, following, _ = root.findall(".//measure")
+        assert [c.findtext("sign") for c in rest.iter("clef")] == (["F", "G"] if ordinary else ["F"])
+        assert [c.findtext("sign") for c in following.iter("clef")] == ([] if ordinary else ["G"])
+        assert [(p.findtext("step"), p.findtext("octave")) for p in following.iter("pitch")] == [("B", "4")] * 4
+
+
 def test_a_rest_boundary_clef_can_use_a_shared_barline(monkeypatch):
     from copisteria import links
     monkeypatch.setattr(links, "load", lambda: None)
