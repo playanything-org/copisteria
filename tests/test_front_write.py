@@ -1828,6 +1828,158 @@ def test_a_keyboard_staff_read_as_percussion_without_its_clef_on_the_page_is_pit
     assert "percussion" in [c.findtext("sign") for c in root.iter("clef")]
 
 
+def test_a_double_bar_at_the_left_of_a_pitched_staff_does_not_make_it_percussion():
+    import numpy as np
+
+    def page(first, following=None):
+        dets = staff_row(100, [20, 400]) + staff_row(300, [20, 400])
+        dets += [det("note_quarter", (95, 115, 107, 125)),
+                 det("clef_perc", (21, 300, 34, 340)),
+                 det("accid_sharp", (65, 312, 74, 328))]
+        dets += [det("note_quarter", (x, y, x + 10, y + 10))
+                 for x, y in zip(range(83, 350, 38), range(330, 280, -6))]
+        if following:
+            dets.append(det("clef_" + following, (46, 300, 57, 340)))
+        layout = front.build(dets, 420, 400)
+        tokens = _tokens(layout, clef=lambda s: first if s.staff == 0 else "perc")
+        for s in layout.syms:
+            if s.fam != "measure":
+                tokens[s.i]["cls"]["v"] = s.cls
+            if s.fam == "note":
+                tokens[s.i]["pos"]["v"] = round((layout.staves[s.staff].mid - s.cy) / 5)
+        gray = np.full((400, 420), 255, np.uint8)
+        for y in range(300, 341, 10):
+            gray[y, 22:400] = 0
+        gray[300:341, 22:24] = 0
+        gray[300:341, 31:33] = 0
+        return ET.fromstring(write.write(_reading(layout, tokens), image=gray).split("\n", 2)[2])
+
+    # A detected opening bass clef has precedence on the first line. A
+    # clefless page may already be labelled percussion by the model there.
+    for first, sign in (("F4", "F"), ("perc", "G")):
+        root = page(first)
+        assert [c.findtext("sign") for c in root.iter("clef")] == [sign]
+        assert not list(root.iter("unpitched"))
+    root = page("G2", "C3")
+    assert [c.findtext("sign") for c in root.iter("clef")] == ["G", "C"]
+    assert not list(root.iter("unpitched"))
+
+
+def test_a_real_percussion_clef_on_a_five_line_staff_stays_unpitched():
+    import numpy as np
+
+    dets = staff_row(100, [20, 200, 390]) + [
+        det("clef_perc", (27, 106, 37, 134)),
+        det("note_quarter", (85, 115, 96, 125)),
+        det("note_quarter", (230, 115, 242, 125)),
+    ]
+    layout = front.build(dets, 420, 230)
+    tokens = _tokens(layout, clef=lambda s: "perc" if s.bar == 0 else None)
+    for s in layout.syms:
+        if s.fam != "measure":
+            tokens[s.i]["cls"]["v"] = s.cls
+    gray = np.full((230, 420), 255, np.uint8)
+    for y in range(100, 141, 10):
+        gray[y, 20:390] = 0
+    gray[107:134, 27:30] = 0
+    gray[107:134, 35:38] = 0
+    root = ET.fromstring(write.write(_reading(layout, tokens), image=gray).split("\n", 2)[2])
+    assert [c.findtext("sign") for c in root.iter("clef")] == ["percussion"]
+    assert len(list(root.iter("unpitched"))) == 2
+
+
+def test_a_percussion_clef_after_a_note_cannot_be_an_opening_barline():
+    import numpy as np
+
+    dets = staff_row(100, [20, 400]) + [
+        det("note_quarter", (24, 116, 29, 123)),
+        det("clef_perc", (32, 100, 43, 140)),
+        det("accid_sharp", (50, 112, 58, 128)),
+    ]
+    dets += [det("note_quarter", (x, y, x + 10, y + 10))
+             for x, y in zip(range(66, 350, 38), range(130, 80, -6))]
+    layout = front.build(dets, 420, 240)
+    tokens = _tokens(layout, clef=lambda s: "G2")
+    for s in layout.syms:
+        if s.fam != "measure":
+            tokens[s.i]["cls"]["v"] = s.cls
+        if s.fam == "note":
+            tokens[s.i]["pos"]["v"] = round((layout.staves[s.staff].mid - s.cy) / 5)
+    gray = np.full((240, 420), 255, np.uint8)
+    for y in range(100, 141, 10):
+        gray[y, 20:400] = 0
+    gray[100:141, 32:34] = 0
+    gray[100:141, 41:43] = 0
+    root = ET.fromstring(write.write(_reading(layout, tokens), image=gray).split("\n", 2)[2])
+    assert [c.findtext("sign") for c in root.iter("clef")] == ["G", "percussion"]
+    assert len(list(root.iter("pitch"))) == 1
+    assert len(list(root.iter("unpitched"))) == 8
+
+
+def test_an_opening_percussion_clef_can_precede_a_switch_to_pitched_notation():
+    import numpy as np
+
+    dets = staff_row(100, [20, 200, 400, 600]) + [
+        det("clef_perc", (31, 102, 41, 139)),
+        det("clef_F4", (210, 104, 230, 131)),
+        det("accid_sharp", (243, 129, 248, 143)),
+    ]
+    positions = ((65, 0), (95, 1), (125, -1), (155, 0), (261, -4), (301, -3),
+                 (341, -2), (381, -1), (441, 0), (481, 1), (521, 2), (561, 3))
+    dets += [det("note_quarter", (x - 5, 116 - 5 * pos, x + 5, 124 - 5 * pos)) for x, pos in positions]
+    layout = front.build(dets, 620, 240)
+    tokens = _tokens(layout, clef=lambda s: ("perc", "F4", None)[s.bar])
+    for s in layout.syms:
+        if s.fam != "measure":
+            tokens[s.i]["cls"]["v"] = s.cls
+        if s.fam == "note":
+            tokens[s.i]["pos"]["v"] = round((120 - s.cy) / 5)
+    gray = np.full((240, 620), 255, np.uint8)
+    for y in range(100, 141, 10):
+        gray[y, 20:600] = 0
+    gray[102:139, 31:33] = 0
+    gray[102:139, 39:41] = 0
+    root = ET.fromstring(write.write(_reading(layout, tokens), image=gray))
+    first, second, third = root.findall(".//measure")
+    assert [c.findtext("sign") for c in root.iter("clef")] == ["percussion", "F"]
+    assert len(list(first.iter("unpitched"))) == 4
+    assert len(list(second.iter("pitch"))) == len(list(third.iter("pitch"))) == 4
+
+
+def test_a_recovered_opening_clef_yields_to_the_printed_change_after_a_bar_rest():
+    import numpy as np
+
+    dets = staff_row(100, [20, 200, 400, 600]) + [
+        det("clef_perc", (20, 100, 31, 140)),
+        det("clef_F4", (47, 104, 66, 132)),
+        det("mRest_measure", (93, 115, 108, 125)),
+        det("clef_G2", (175, 94, 193, 145)),
+        det("barLine_single", (199, 100, 201, 140)),
+        det("accid_sharp", (225, 124, 230, 138)),
+    ]
+    dets += [det("note_quarter", (x - 5, 116 - 5 * pos, x + 5, 124 - 5 * pos))
+             for x, pos in zip((241, 281, 321, 361, 441, 481, 521, 561), range(-3, 5))]
+    layout = front.build(dets, 620, 240)
+    tokens = _tokens(layout, clef=lambda s: "perc" if s.bar < 2 else None)
+    for s in layout.syms:
+        if s.fam != "measure":
+            tokens[s.i]["cls"]["v"] = s.cls
+        if s.fam == "note":
+            tokens[s.i]["pos"]["v"] = round((120 - s.cy) / 5)
+    gray = np.full((240, 620), 255, np.uint8)
+    for y in range(100, 141, 10):
+        gray[y, 20:600] = 0
+    gray[100:141, 20:22] = 0
+    gray[100:141, 29:31] = 0
+    root = ET.fromstring(write.write(_reading(layout, tokens), image=gray))
+    rest, following, _ = root.findall(".//measure")
+    assert [c.findtext("sign") for c in rest.iter("clef")] == ["F"]
+    assert [c.findtext("sign") for c in following.iter("clef")] == ["G"]
+    assert [(p.findtext("step"), p.findtext("octave")) for p in following.iter("pitch")] == [
+        ("F", "4"), ("G", "4"), ("A", "4"), ("B", "4"),
+    ]
+
+
 def test_two_systems_a_wrong_count_lumps_together_are_not_one_grid_however_many_staves_each_has():
     """Each side's staves agree with their own system's: only the other side's lines vouch for a join."""
     said = lambda sts: ([False] * (len(sts) - 1), ["white"] * (len(sts) - 1))      # noqa: E731

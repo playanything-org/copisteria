@@ -382,20 +382,114 @@ def _clefs_after_bar_rests(rd: Reading, mask=None) -> dict[tuple[int, int], tupl
     return out
 
 
-def _pitched_clefs(rd: Reading, plans: list, place: list) -> dict[tuple[int, int], str]:
+def _double_bar_ink(gray, box, sp: float) -> bool:
+    """Two narrow, parallel strokes with paper between them, across the glyph's height."""
+    import numpy as np
+    from .front import _dark
+
+    x0, y0, x1, y1 = box
+    height, width = gray.shape
+    ink = gray[max(0, round(y0 + 0.12 * sp)):min(height, round(y1 - 0.12 * sp)),
+               max(0, round(x0 - 0.19 * sp)):min(width, round(x1 + 0.19 * sp))]
+    if min(ink.shape) < 3:
+        return False
+    ink = np.pad(_dark(ink), ((0, 0), (1, 1)))
+    rows, columns = np.indices(ink.shape)
+    # The two legs can lean together on a scanned or hand-drawn page.
+    lean = round(0.2 * sp)
+    for dx in range(-lean, lean + 1):
+        source = columns + np.linspace(-dx / 2, dx / 2, ink.shape[0]).round().astype(int)[:, None]
+        tracks = ink[rows, source.clip(0, ink.shape[1] - 1)] & (source >= 0) & (source < ink.shape[1])
+        solid = tracks.mean(axis=0)
+        near = (tracks[:, :-2] | tracks[:, 1:-1] | tracks[:, 2:]).mean(axis=0)
+        legs = np.flatnonzero((solid[1:-1] >= 0.76) & (near >= 0.83)) + 1
+        for i, left in enumerate(legs):
+            for right in legs[i + 1:]:
+                if max(2, round(0.28 * sp)) <= right - left <= 1.25 * sp and solid[left + 1:right].min() <= 0.38:
+                    return True
+    return False
+
+
+def _barlines_read_as_percussion(rd: Reading, gray) -> set[int]:
+    """A left-edge double line through a pitched five-line staff can look like a percussion clef."""
+    if gray is None:
+        return set()
+    layout = rd.layout
+    candidates = []
+    for s in layout.syms:
+        if s.staff < 0 or s.bar != 0 or s.cls != "clef_perc" or not _real(rd, s.i) or _cls(rd, s.i) != s.cls:
+            continue
+        st = layout.staves[s.staff]
+        sp = st.sp
+        left = st.line_x0 if st.line_x0 is not None else st.x0
+        x0, y0, x1, y1 = s.box
+        if (not st.one_line and -0.75 * sp <= s.cx - left <= 2.25 * sp and x1 - x0 <= 1.3 * sp and
+                3.55 * sp <= y1 - y0 <= 4.65 * sp and abs(y0 - st.y0) <= 0.55 * sp and abs(y1 - st.y1) <= 0.55 * sp):
+            candidates.append(s)
+    if not candidates:
+        return set()
+    staff_symbols: dict[int, list] = {s.staff: [] for s in candidates}
+    for s in layout.syms:
+        if s.staff in staff_symbols and s.bar >= 0 and s.fam != "measure" and _real(rd, s.i):
+            staff_symbols[s.staff].append(s)
+    rejected = set()
+    for s in candidates:
+        coded = [(sym, _fam(_cls(rd, sym.i))) for sym in staff_symbols[s.staff]]
+        # An opening barline stands before the staff's first music.
+        first_music = min((sym.cx for sym, fam in coded if fam in ("note", "rest", "mRest", "multiRest")),
+                          default=math.inf)
+        if first_music <= s.cx:
+            continue
+        pitched_glyphs = [sym.cx for sym, fam in coded if fam == "clef" and sym.cls == _cls(rd, sym.i)
+                          and _clef_of_cls(sym.cls) not in ("perc", "other") and sym.cx > s.cx]
+        # An instrument can switch from drums to pitched notation on the same staff.
+        # Use evidence from the opening passage unless a printed clef makes it pitched.
+        if not any(x < first_music for x in pitched_glyphs):
+            end = min(pitched_glyphs, default=math.inf)
+            coded = [(sym, fam) for sym, fam in coded if sym.cx < end]
+        positions = {rd.tok[sym.i]["pos"]["v"] for sym, fam in coded if fam == "note"}
+        accidentals = any(sym.cx > s.cx and fam == "accid" for sym, fam in coded)
+        if accidentals and len(positions) >= 7 and _double_bar_ink(gray, s.box, layout.staves[s.staff].sp):
+            rejected.add(s.i)
+    return rejected
+
+
+def _clefs_after_opening_barlines(rd: Reading, rejected: set[int]) -> dict[tuple[int, int], str]:
+    """The printed pitched clef beside a rejected opening barline, when there is one."""
+    openings = {(rd.layout.syms[i].staff, rd.layout.syms[i].bar): rd.layout.syms[i] for i in rejected}
+    found = {}
+    first_music = {}
+    for s in rd.layout.syms:
+        key = (s.staff, s.bar)
+        barline = openings.get(key)
+        if barline is None or s.cx <= barline.cx or not _real(rd, s.i):
+            continue
+        cls = _cls(rd, s.i)
+        if _fam(cls) in ("note", "rest", "mRest", "multiRest"):
+            first_music[key] = min(s.cx, first_music.get(key, math.inf))
+        if cls == s.cls and cls.startswith("clef_") and s.p >= 0.5 and _clef_of_cls(cls) not in ("perc", "other"):
+            if s.cx - barline.cx <= 5 * rd.layout.staves[s.staff].sp and (key not in found or s.cx < found[key].cx):
+                found[key] = s
+    return {key: _clef_of_cls(s.cls) for key, s in found.items() if s.cx < first_music.get(key, math.inf)}
+
+
+def _pitched_clefs(rd: Reading, plans: list, place: list, rejected=frozenset()) -> dict[tuple[int, int], str]:
     """(part, its staff) -> the pitched clef read where the model reads a percussion clef that the page does not show:
     a staff of five lines on which no percussion clef glyph was seen, either one of a braced part whose other staff is
     pitched (a keyboard's left hand) or one whose bars are read pitched at least as often as percussion (an organ's
     pedal staff read F, then percussion for a line, then F). Its clef is then the one it last read pitched (or, before
     any, the first it reads pitched; a lower staff of a keyboard that reads none takes the bass clef, an upper one the
     treble). A percussion clef glyph on any of its staves, a one-line staff, or a staff read percussion more often than
-    not and in no braced part (a drum staff whose clef the detector missed) stays percussion."""
+    not and in no braced part (a drum staff whose clef the detector missed) stays percussion. A staff with an opening
+    barline read as its percussion clef is pitched unless another staff of its system-to-system track confirms it."""
     L = rd.layout
-    shown = {s.staff for s in L.syms if s.fam == "clef" and _real(rd, s.i) and _clef_of_cls(_cls(rd, s.i)) == "perc"}
+    shown = {s.staff for s in L.syms if s.fam == "clef" and _real(rd, s.i) and _cls(rd, s.i) == "clef_perc" and s.i not in rejected}
+    barlines = {L.syms[i].staff for i in rejected}
     out: dict[tuple[int, int], str] = {}
     for n, pl in enumerate(plans):
         states: dict[int, list[str]] = {k_i: [] for k_i in range(len(pl.staves))}
         kept: set[int] = set()
+        pitched_by_ink: set[int] = set()
         for s_i in range(len(L.systems)):
             for k_i, pos in enumerate(pl.staves):
                 staff = place[s_i].get(pos)
@@ -403,6 +497,8 @@ def _pitched_clefs(rd: Reading, plans: list, place: list) -> dict[tuple[int, int
                     continue
                 if L.staves[staff].one_line or staff in shown:
                     kept.add(k_i)
+                if staff in barlines:
+                    pitched_by_ink.add(k_i)
                 for b in L.staves[staff].bars:
                     r = rd.tok.get(b)
                     if r is not None and "clef" in r and r["clef"]["v"] is not None:
@@ -412,7 +508,7 @@ def _pitched_clefs(rd: Reading, plans: list, place: list) -> dict[tuple[int, int
             if not perc or k_i in kept:
                 continue
             keyboard = len(pl.staves) > 1 and any(v != "perc" for o, ws in states.items() if o != k_i for v in ws)
-            if keyboard or len(pitched) >= perc:
+            if keyboard or len(pitched) >= perc or k_i in pitched_by_ink:
                 out[(n, k_i)] = pitched[0] if pitched else ("F4" if k_i > 0 else "G2")
     return out
 
@@ -558,12 +654,13 @@ def _unsupported_dynamics(rd, gray):
 
 
 def _events(rd: Reading, staff: int, bar: int, clef: str, key: int, texts,
-            unsupported_dynamics=frozenset()) -> tuple[list[Event], list, dict]:
+            unsupported_symbols=frozenset()) -> tuple[list[Event], list, dict]:
     """The bar's events, plus its directions [(x, kind, payload)] and bar-line marks."""
     L = rd.layout
     st = L.staves[staff]
     sp = st.sp
-    syms = [s for s in L.syms if s.staff == staff and s.bar == bar and _real(rd, s.i) and s.fam != "measure"]
+    syms = [s for s in L.syms if s.staff == staff and s.bar == bar and s.i not in unsupported_symbols
+            and _real(rd, s.i) and s.fam != "measure"]
     syms.sort(key=lambda s: s.cx)
     clef_changes = sorted((s.cx, _clef_of_cls(_cls(rd, s.i))) for s in syms if _fam(_cls(rd, s.i)) == "clef")
     notes_x = [s.cx for s in syms if _fam(_cls(rd, s.i)) in ("note", "rest")]
@@ -607,7 +704,7 @@ def _events(rd: Reading, staff: int, bar: int, clef: str, key: int, texts,
             events.append(Event(x=s.cx, kind="mrest", voice=1, si=s.i))
         elif f in ("mRpt", "multiRpt"):
             marks["repeat_bar"] = True
-        elif f == "dynam" and c[len("dynam_"):] in DYN and s.i not in unsupported_dynamics:
+        elif f == "dynam" and c[len("dynam_"):] in DYN:
             dirs.append((s.cx, "dyn", c[len("dynam_"):], s.cy > st.mid))
         elif f == "hairpin" and c in ("hairpin_cres", "hairpin_dim"):
             pins.append((s.box[0], s.box[2], "crescendo" if c == "hairpin_cres" else "diminuendo", s.cy > st.mid))
@@ -1670,7 +1767,9 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
 
         gray = np.asarray(image.convert("L") if hasattr(image, "convert") else image)
         mask = ink_mask(gray)
-    unsupported_dynamics = _unsupported_dynamics(rd, gray)
+    rejected_percussion = _barlines_read_as_percussion(rd, gray)
+    unsupported_symbols = _unsupported_dynamics(rd, gray) | rejected_percussion
+    clefs_after_opening_barlines = _clefs_after_opening_barlines(rd, rejected_percussion) if rejected_percussion else {}
     plans = _plan_parts(rd)
     texts = texts or []
     # per system: place (in the fullest system) -> staff
@@ -1712,7 +1811,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
         columns += [(s_i, c) for c in range(ncol)]
     rest_columns = _counted_rest_columns(rd, texts, rest_counts) if texts or rest_counts else {}
     expansions = {column: count for column, count in rest_columns.items() if isinstance(count, int)}
-    pitched_clefs = _pitched_clefs(rd, plans, place)
+    pitched_clefs = _pitched_clefs(rd, plans, place, rejected_percussion)
     clefs_after_rests = _clefs_after_bar_rests(rd, mask)
 
     unvoiced: dict = {}                 # (staff, bar) -> why the writer could not voice it (`build`)
@@ -1749,7 +1848,8 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                     before = state[k_i]["clef"]
                     state[k_i] = _bar_state(rd, staff, j, state[k_i])
                     if state[k_i]["clef"] == "perc" and (n, k_i) in pitched_clefs:
-                        state[k_i]["clef"] = before if clef_read[k_i] and before != "perc" else pitched_clefs[(n, k_i)]
+                        carried = before if clef_read[k_i] and before != "perc" else pitched_clefs[(n, k_i)]
+                        state[k_i]["clef"] = clefs_after_opening_barlines.get((staff, j), carried)
                     if (staff, j) in clefs_after_rests:
                         boundary_clef, whole_rest = clefs_after_rests[(staff, j)]
                         # A repeated bar head can still describe the clef before the rest.
@@ -1761,12 +1861,12 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                         first[k_i] = False
                         if opening is not None:
                             state[k_i]["time"] = opening
-                    ev, dirs, marks = _events(rd, staff, j, state[k_i]["clef"], state[k_i]["key"], texts, unsupported_dynamics)
+                    ev, dirs, marks = _events(rd, staff, j, state[k_i]["clef"], state[k_i]["key"], texts, unsupported_symbols)
                     if (s_i, c) in expansions and ev and ev[0].kind == "rest":
                         # A whole-rest glyph here stands for a whole measure in any meter.
                         ev[0] = Event(x=ev[0].x, kind="mrest", voice=1, si=ev[0].si)
                     for j2 in bars[1:]:            # two boxes of this staff under one column: one bar
-                        ev2, dirs2, marks2 = _events(rd, staff, j2, state[k_i]["clef"], state[k_i]["key"], texts, unsupported_dynamics)
+                        ev2, dirs2, marks2 = _events(rd, staff, j2, state[k_i]["clef"], state[k_i]["key"], texts, unsupported_symbols)
                         ev += ev2; dirs += dirs2
                         marks["right"] = marks2["right"] or marks["right"]
                         marks["endings"] += marks2["endings"]
