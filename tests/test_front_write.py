@@ -149,15 +149,61 @@ def test_a_clef_after_a_bar_rest_applies_before_the_cue_notes():
         det("note_quarter", (220, 117, 226, 123)),
         det("note_quarter", (258, 117, 264, 123)),
     ], 400, 240)
-    tokens = _tokens(layout, clef=lambda s: "F4" if s.bar == 0 else None)
+    for next_head, sign, line, note in ((None, "G", "2", ("B", "4")), ("F4", "G", "2", ("B", "4")),
+                                        ("C3", "C", "3", ("C", "4"))):
+        tokens = _tokens(layout, clef=lambda s: "F4" if s.bar == 0 else next_head)
+        for s in layout.syms:
+            if s.fam != "measure":
+                tokens[s.i]["cls"]["v"] = s.cls
+        xml = write.write(_reading(layout, tokens))
+        first, cue = ET.fromstring(xml.split("\n", 2)[2]).findall(".//measure")
+        assert first.findtext("attributes/clef/sign") == "F"
+        assert cue.findtext("attributes/clef/sign") == sign
+        assert cue.findtext("attributes/clef/line") == line
+        assert [(p.findtext("step"), p.findtext("octave")) for p in cue.findall("note/pitch")] == [note, note]
+
+
+def test_a_rest_boundary_clef_requires_a_written_rest_and_yields_to_a_printed_clef():
+    opening = staff_row(100, [20, 200, 380]) + [
+        det("clef_F4", (171, 104, 193, 133)),
+        det("barLine_single", (199, 100, 201, 140)),
+        det("note_whole", (260, 115, 274, 125)),
+    ]
+    for symbols in ([], [det("mRest_measure", (85, 114, 101, 127)), det("clef_C3", (206, 102, 225, 136))]):
+        layout = front.build(opening + symbols, 400, 240)
+        tokens = _tokens(layout, clef=lambda s: "G2" if s.bar == 0 else None)
+        for s in layout.syms:
+            if s.fam != "measure":
+                tokens[s.i]["cls"]["v"] = s.cls
+        if not symbols:
+            # A decoded measure token does not become a written rest.
+            tokens[layout.staves[0].bars[0]]["cls"]["v"] = "mRest_measure"
+        measures = ET.fromstring(write.write(_reading(layout, tokens)).split("\n", 2)[2]).findall(".//measure")
+        assert measures[1].find("attributes/clef") is None
+        assert measures[1].findtext("note/pitch/step") == "B"
+
+
+def test_a_rest_boundary_clef_can_use_a_shared_barline(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    layout = front.build(staff_row(100, [20, 200, 380]) + staff_row(180, [20, 200, 380]) + [
+        det("grpSym_brace", (3, 100, 13, 220)),
+        det("barLine_single", (199, 100, 201, 220)),
+        det("mRest_measure", (82, 195, 95, 205)),
+        det("clef_F4", (174, 184, 193, 213)),
+        det("note_whole", (261, 195, 273, 205)),
+    ], 400, 270)
+    assert [s.staves for s in layout.systems] == [[0, 1]]
+    tokens = _tokens(layout, clef=lambda s: "G2" if s.bar == 0 else None)
     for s in layout.syms:
         if s.fam != "measure":
             tokens[s.i]["cls"]["v"] = s.cls
+        if s.fam == "barLine":
+            s.staff = 0
     xml = write.write(_reading(layout, tokens))
-    first, cue = ET.fromstring(xml.split("\n", 2)[2]).findall(".//measure")
-    assert first.findtext("attributes/clef/sign") == "F"
-    assert cue.findtext("attributes/clef/sign") == "G"
-    assert [(p.findtext("step"), p.findtext("octave")) for p in cue.findall("note/pitch")] == [("B", "4"), ("B", "4")]
+    measures = ET.fromstring(xml.split("\n", 2)[2]).findall(".//measure")
+    clefs = measures[1].findall("attributes/clef")
+    assert [(c.get("number"), c.findtext("sign")) for c in clefs] == [("2", "F")]
 
 
 def test_counted_rests_lengthen_the_same_column_in_every_part(monkeypatch):

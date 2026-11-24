@@ -335,14 +335,14 @@ def _clefs_after_bar_rests(rd: Reading) -> dict[tuple[int, int], str]:
     lines: dict[int, list] = {}
     candidates = []
     for s in layout.syms:
-        if s.staff < 0 or s.bar < 0 or not _real(rd, s.i):
+        if s.staff < 0 or s.bar < 0 or s.fam == "measure" or not _real(rd, s.i):
             continue
         cls = _cls(rd, s.i)
         fam = _fam(cls)
         if fam in ("note", "rest", "mRest", "multiRest", "clef"):
             by_bar.setdefault((s.staff, s.bar), []).append(s)
-        if fam == "barLine":
-            lines.setdefault(s.staff, []).append(s)
+        if fam == "barLine" and s.fam == "barLine":
+            lines.setdefault(layout.staves[s.staff].system, []).append(s)
         if cls == s.cls and cls.startswith("clef_") and s.p >= 0.7 and _clef_of_cls(cls) not in ("perc", "other"):
             candidates.append(s)
 
@@ -350,19 +350,28 @@ def _clefs_after_bar_rests(rd: Reading) -> dict[tuple[int, int], str]:
     for s in sorted(candidates, key=lambda s: s.p, reverse=True):
         staff = layout.staves[s.staff]
         nxt = (s.staff, s.bar + 1)
-        if nxt in out or nxt[1] >= len(staff.bars):
+        if staff.system < 0 or staff.pos < 0 or nxt in out or nxt[1] >= len(staff.bars):
+            continue
+        # Two detected boxes in the same output column are still one measure.
+        if layout.column(*nxt) != layout.column(s.staff, s.bar) + 1:
             continue
         _, _, edge, _ = layout.bar_box(s.staff, s.bar)
         if not (s.cx < edge and -0.25 * staff.sp <= edge - s.box[2] <= staff.sp):
             continue
-        if not any(abs(line.cx - edge) <= 0.5 * staff.sp for line in lines.get(s.staff, ())):
+        # A line can join several staves and be assigned to only one of them.
+        if not any(abs(line.cx - edge) <= 0.5 * staff.sp and
+                   (line.staff == s.staff or (line.box[1] <= staff.y0 + 0.5 * staff.sp and
+                                              line.box[3] >= staff.y1 - 0.5 * staff.sp))
+                   for line in lines.get(staff.system, ())):
             continue
         music = [b for b in by_bar[(s.staff, s.bar)] if _fam(_cls(rd, b.i)) != "clef"]
         if not music or any(_fam(_cls(rd, b.i)) not in ("mRest", "multiRest") or b.cx >= s.cx for b in music):
             continue
-        next_head = rd.tok.get(staff.bars[nxt[1]], {}).get("clef", {}).get("v")
-        if next_head is None:
-            out[nxt] = _clef_of_cls(s.cls)
+        following = by_bar.get(nxt, ())
+        first_music = min((b.cx for b in following if _fam(_cls(rd, b.i)) != "clef"), default=math.inf)
+        if any(b.fam == "clef" and b.cx < first_music and _fam(_cls(rd, b.i)) == "clef" for b in following):
+            continue
+        out[nxt] = _clef_of_cls(s.cls)
     return out
 
 
@@ -1728,8 +1737,11 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                     j = bars[0]
                     before = state[k_i]["clef"]
                     state[k_i] = _bar_state(rd, staff, j, state[k_i])
-                    if (staff, j) in clefs_after_rests:
-                        state[k_i]["clef"] = clefs_after_rests[(staff, j)]
+                    boundary_clef = clefs_after_rests.get((staff, j))
+                    # The next head can repeat the old clef. A different new
+                    # clef already carried by that head has its own evidence.
+                    if boundary_clef and state[k_i]["clef"] == before:
+                        state[k_i]["clef"] = boundary_clef
                     if state[k_i]["clef"] == "perc" and (n, k_i) in pitched_clefs:
                         state[k_i]["clef"] = before if clef_read[k_i] and before != "perc" else pitched_clefs[(n, k_i)]
                     clef_read[k_i] = True
