@@ -328,6 +328,19 @@ def _bar_state(rd: Reading, staff: int, bar: int, prev: dict) -> dict:
     return state
 
 
+def _only_barline_ink(mask, symbol, staff) -> bool:
+    """Reject a clef box whose only vertical ink is a stroke across the staff."""
+    height, width = mask.shape
+    x0, x1 = max(0, math.floor(symbol.box[0])), min(width, math.ceil(symbol.box[2]))
+    y0, y1 = max(0, round(staff.y0 + 1)), min(height, round(staff.y1 - 1))
+    if x1 <= x0 or y1 <= y0:
+        return False
+    coverage = mask[y0:y1, x0:x1].mean(axis=0)
+    strokes = coverage >= 0.9
+    # Ignore the horizontal staff lines. A separate glyph reaches vertically between them.
+    return bool(strokes.any() and not ((coverage >= 0.25) & ~strokes).any())
+
+
 def _clefs_after_bar_rests(rd: Reading, mask=None) -> dict[tuple[int, int], tuple[str, bool]]:
     """The next bar's clef and whether a whole-rest event already carries it."""
     from .front import _ink_run
@@ -354,6 +367,9 @@ def _clefs_after_bar_rests(rd: Reading, mask=None) -> dict[tuple[int, int], tupl
         nxt = (s.staff, s.bar + 1)
         if staff.system < 0 or staff.pos < 0 or nxt in out or nxt[1] >= len(staff.bars):
             continue
+        # A tall measure box can claim a glyph printed on the neighboring staff.
+        if not staff.y0 - 0.5 * staff.sp <= s.cy <= staff.y1 + 0.5 * staff.sp:
+            continue
         # Two detected boxes in the same output column are still one measure.
         if layout.column(*nxt) != layout.column(s.staff, s.bar) + 1:
             continue
@@ -367,16 +383,20 @@ def _clefs_after_bar_rests(rd: Reading, mask=None) -> dict[tuple[int, int], tupl
         if not whole_rest and any(_fam(_cls(rd, b.i)) not in ("mRest", "multiRest") for b in music):
             continue
         # A line can be shared by several staves or recovered by the front end from ink.
-        detected = any(abs(line.cx - edge) <= 0.5 * staff.sp and
-                       (line.staff == s.staff or (line.box[1] <= staff.y0 + 0.5 * staff.sp and
-                                                  line.box[3] >= staff.y1 - 0.5 * staff.sp))
-                       for line in lines.get(staff.system, ()))
+        detected = [line for line in lines.get(staff.system, ()) if abs(line.cx - edge) <= 0.5 * staff.sp and
+                    (line.staff == s.staff or (line.box[1] <= staff.y0 + 0.5 * staff.sp and
+                                               line.box[3] >= staff.y1 - 0.5 * staff.sp))]
         if not detected and (not layout.ink or mask is None or
                              _ink_run(mask, edge, staff.y0 + 1, staff.y1 - 1, reach=1) < 0.9):
             continue
+        if mask is not None:
+            if _only_barline_ink(mask, s, staff):
+                continue
+        elif any(line.box[0] < s.box[2] for line in detected):
+            continue
         following = by_bar.get(nxt, ())
         first_music = min((b.cx for b in following if _fam(_cls(rd, b.i)) != "clef"), default=math.inf)
-        if any(b.fam == "clef" and b.cx < first_music and _fam(_cls(rd, b.i)) == "clef" for b in following):
+        if any(b.cx < first_music and _fam(_cls(rd, b.i)) == "clef" for b in following):
             continue
         out[nxt] = (_clef_of_cls(s.cls), whole_rest)
     return out

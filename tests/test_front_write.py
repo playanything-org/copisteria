@@ -239,6 +239,91 @@ def test_a_rest_boundary_clef_can_use_a_shared_barline(monkeypatch):
     assert [(c.get("number"), c.findtext("sign")) for c in clefs] == [("2", "F")]
 
 
+def test_the_opening_clef_after_a_repeat_can_be_decoded_from_an_accidental_box():
+    layout = front.build(staff_row(100, [20, 200, 400, 600]) + [
+        det("note_whole", (90, 115, 104, 125)),
+        det("rest_whole", (286, 110, 298, 117)),
+        det("clef_G2", (367, 100, 389, 141)),
+        det("barLine_repeat_end", (393, 100, 401, 140)),
+        det("accid_flat", (410, 104, 433, 133)),
+        det("note_whole", (486, 115, 500, 125)),
+    ], 620, 240)
+    tokens = _tokens(layout, clef=lambda s: "G2" if s.bar == 0 else "F4")
+    for s in layout.syms:
+        tokens[s.i]["cls"]["v"] = "clef_F4" if s.cls == "accid_flat" else s.cls
+    _, rest, following = ET.fromstring(write.write(_reading(layout, tokens))).findall(".//measure")
+    assert [c.findtext("sign") for c in rest.iter("clef")] == ["F", "G"]
+    assert rest.find("barline/repeat").get("direction") == "backward"
+    assert following.findtext("attributes/clef/sign") == "F"
+    assert [following.findtext("note/pitch/" + k) for k in ("step", "octave")] == ["D", "3"]
+
+
+def test_a_lower_staff_clef_does_not_follow_an_oversized_upper_measure_box(monkeypatch):
+    import numpy as np
+    from copisteria import links
+
+    monkeypatch.setattr(links, "load", lambda: None)
+    image = np.full((260, 430), 255, np.uint8)
+    for y in (*range(100, 141, 10), *range(170, 211, 10)):
+        image[y, 20:401] = 0
+    for x in (20, 200, 400):
+        image[100:211, x] = 0
+    rows = staff_row(100, [20, 200, 400]) + staff_row(170, [20, 200, 400])
+    rows[0] = det("measure", (20, 100, 200, 188))
+    layout = front.build(rows + [
+        det("grpSym_brace", (8, 100, 17, 210)),
+        det("mRest_measure", (101, 109, 114, 117)),
+        det("note_whole", (104, 185, 118, 195)),
+        det("clef_F4", (172, 171, 192, 196)),
+        det("barLine_single", (199, 100, 201, 210)),
+        det("note_whole", (262, 115, 276, 125)),
+        det("note_whole", (262, 185, 276, 195)),
+    ], 430, 260, image=image)
+    assert [s.staves for s in layout.systems] == [[0, 1]]
+    assert next(s for s in layout.syms if s.cls == "clef_F4").staff == 0
+    tokens = _tokens(layout, clef=lambda s: "F4" if (s.staff, s.bar) == (1, 1) else "G2")
+    for s in layout.syms:
+        tokens[s.i]["cls"]["v"] = s.cls
+    following = ET.fromstring(write.write(_reading(layout, tokens), image=image)).findall(".//measure")[1]
+    assert [(c.get("number"), c.findtext("sign")) for c in following.findall("attributes/clef")] == [("2", "F")]
+    assert [(n.findtext("staff"), n.findtext("pitch/step"), n.findtext("pitch/octave"))
+            for n in following.findall("note")] == [("1", "B", "4"), ("2", "D", "3")]
+
+
+def test_the_inner_stroke_of_a_double_barline_does_not_supply_a_clef(monkeypatch):
+    import numpy as np
+    from copisteria import links
+
+    monkeypatch.setattr(links, "load", lambda: None)
+    image = np.full((240, 630), 255, np.uint8)
+    for y in range(100, 141, 10):
+        image[y, 20:601] = 0
+    for x in (200, 393, 400, 600):
+        image[100:141, x] = 0
+    layout = front.build(staff_row(100, [20, 200, 400, 600]) + [
+        det("note_whole", (90, 115, 104, 125)),
+        det("clef_C3", (211, 101, 233, 139)),
+        det("mRest_measure", (286, 109, 300, 117)),
+        det("clef_G2", (380, 99, 395, 141)),
+        det("barLine_double", (393, 100, 401, 140)),
+        det("note_whole", (470, 115, 484, 125)),
+    ], 630, 240, image=image)
+    tokens = _tokens(layout, clef=lambda s: "G2" if s.bar == 0 else "C3")
+    for s in layout.syms:
+        tokens[s.i]["cls"]["v"] = s.cls
+    reading = _reading(layout, tokens)
+    following = ET.fromstring(write.write(reading, image=image)).findall(".//measure")[2]
+    assert following.find("attributes/clef") is None
+    assert [following.findtext("note/pitch/" + k) for k in ("step", "octave")] == ["C", "4"]
+
+    # A glyph left of the line can have a loose box that still touches the stroke.
+    image[106:131, 382:385] = 0
+    image[124:128, 380:390] = 0
+    following = ET.fromstring(write.write(reading, image=image)).findall(".//measure")[2]
+    assert following.findtext("attributes/clef/sign") == "G"
+    assert [following.findtext("note/pitch/" + k) for k in ("step", "octave")] == ["B", "4"]
+
+
 def test_counted_rests_lengthen_the_same_column_in_every_part(monkeypatch):
     from copisteria import links
     monkeypatch.setattr(links, "load", lambda: None)
