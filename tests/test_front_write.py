@@ -1,7 +1,7 @@
 # Modified by Play Anything (https://github.com/playanything-org/copisteria): see README.md.
-from fractions import Fraction
-
+import sys
 import xml.etree.ElementTree as ET
+from fractions import Fraction
 
 from copisteria import front, write
 from copisteria.read import Reading
@@ -374,6 +374,7 @@ def test_dynamics_need_ink_support_when_the_reader_is_unsure(monkeypatch):
     import numpy as np
     from copisteria import links
 
+    monkeypatch.setitem(sys.modules, "cv2", None)
     monkeypatch.setattr(links, "load", lambda: None)
     dets = staff_row(130, [25, 235, 445], sp=12)
     dets += [det("note_quarter", (x, 149, x + 12, 161)) for x in (55, 145, 265, 355)]
@@ -405,6 +406,17 @@ def test_dynamics_need_ink_support_when_the_reader_is_unsure(monkeypatch):
 
     assert labels(None) == ["f", "ff", "mp", "p"]
     assert labels(page) == ["mp", "p"]
+
+
+def test_dynamic_ink_distances_use_the_calibrated_chamfer_weights():
+    import numpy as np
+
+    ink = np.ones((11, 11), np.uint8)
+    ink[5, 5] = 0
+    distance = write._dynamic_ink_distances(ink)
+    assert distance[0, 0] == distance[5, 6] == 1
+    assert distance[4, 4] == 91750 / 65536
+    assert distance[7, 6] == 143976 / 65536
 
 
 def test_a_pedal_mark_is_written_under_a_keyboard_and_not_under_a_part_of_one_staff(monkeypatch):

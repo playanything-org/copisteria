@@ -419,13 +419,36 @@ def _counted_rest_columns(rd, texts, rest_counts):
     return result
 
 
+def _dynamic_ink_distances(ink):
+    """Distance to paper in the 5 by 5 chamfer metric used to tune the ink thresholds."""
+    import numpy as np
+    from scipy.ndimage import grey_erosion
+
+    # Axial, diagonal and knight moves, with the original 16-bit fractional weights.
+    axial, diagonal, knight = 1.0, 91750 / 65536, 143976 / 65536
+    mask = np.array([[np.inf, knight, np.inf, knight, np.inf],
+                     [knight, diagonal, axial, diagonal, knight],
+                     [np.inf, axial, 0, axial, np.inf],
+                     [knight, diagonal, axial, diagonal, knight],
+                     [np.inf, knight, np.inf, knight, np.inf]])
+    footprint = np.isfinite(mask)
+    distance = np.where(np.pad(ink, 1), np.inf, 0.0)
+    # Each erosion adds one move to the shortest paths from paper. The paper border is at most this
+    # many axial steps away from any pixel, and no move costs less than an axial step.
+    for _ in range((min(ink.shape) + 1) // 2):
+        closer = grey_erosion(distance, footprint=footprint, structure=-mask, mode="constant", cval=np.inf)
+        if np.array_equal(distance, closer):
+            break
+        distance = closer
+    return distance[1:-1, 1:-1].astype(np.float32)
+
+
 def _thin_dynamic_ink(gray, box, space, confidence):
     """Test a weak letter dynamic's stroke width and slant against the local staff space.
 
     The strip of nearby ink supplies the dark and light levels even when the glyph box holds mostly paper.
     A low-contrast strip gives no verdict.
     """
-    import cv2
     import numpy as np
 
     height, width = gray.shape
@@ -441,7 +464,7 @@ def _thin_dynamic_ink(gray, box, space, confidence):
     if light - dark < 40:
         return False
     ink = np.uint8(glyph <= dark + 0.61 * (light - dark))
-    radii = cv2.distanceTransform(np.pad(ink, 1), cv2.DIST_L2, 5)[1:-1, 1:-1][ink != 0]
+    radii = _dynamic_ink_distances(ink)[ink != 0]
     if not radii.size:
         return True
     stroke = np.percentile(radii, 85) / space
