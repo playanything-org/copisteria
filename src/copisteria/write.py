@@ -328,6 +328,44 @@ def _bar_state(rd: Reading, staff: int, bar: int, prev: dict) -> dict:
     return state
 
 
+def _clefs_after_bar_rests(rd: Reading) -> dict[tuple[int, int], str]:
+    """A pitched clef just before the closing line of a bar rest starts the next bar."""
+    layout = rd.layout
+    by_bar: dict[tuple[int, int], list] = {}
+    lines: dict[int, list] = {}
+    candidates = []
+    for s in layout.syms:
+        if s.staff < 0 or s.bar < 0 or not _real(rd, s.i):
+            continue
+        cls = _cls(rd, s.i)
+        fam = _fam(cls)
+        if fam in ("note", "rest", "mRest", "multiRest", "clef"):
+            by_bar.setdefault((s.staff, s.bar), []).append(s)
+        if fam == "barLine":
+            lines.setdefault(s.staff, []).append(s)
+        if cls == s.cls and cls.startswith("clef_") and s.p >= 0.7 and _clef_of_cls(cls) not in ("perc", "other"):
+            candidates.append(s)
+
+    out = {}
+    for s in sorted(candidates, key=lambda s: s.p, reverse=True):
+        staff = layout.staves[s.staff]
+        nxt = (s.staff, s.bar + 1)
+        if nxt in out or nxt[1] >= len(staff.bars):
+            continue
+        _, _, edge, _ = layout.bar_box(s.staff, s.bar)
+        if not (s.cx < edge and -0.25 * staff.sp <= edge - s.box[2] <= staff.sp):
+            continue
+        if not any(abs(line.cx - edge) <= 0.5 * staff.sp for line in lines.get(s.staff, ())):
+            continue
+        music = [b for b in by_bar[(s.staff, s.bar)] if _fam(_cls(rd, b.i)) != "clef"]
+        if not music or any(_fam(_cls(rd, b.i)) not in ("mRest", "multiRest") or b.cx >= s.cx for b in music):
+            continue
+        next_head = rd.tok.get(staff.bars[nxt[1]], {}).get("clef", {}).get("v")
+        if next_head is None:
+            out[nxt] = _clef_of_cls(s.cls)
+    return out
+
+
 def _pitched_clefs(rd: Reading, plans: list, place: list) -> dict[tuple[int, int], str]:
     """(part, its staff) -> the pitched clef read where the model reads a percussion clef that the page does not show:
     a staff of five lines on which no percussion clef glyph was seen, either one of a braced part whose other staff is
@@ -1656,6 +1694,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
     rest_columns = _counted_rest_columns(rd, texts, rest_counts) if texts or rest_counts else {}
     expansions = {column: count for column, count in rest_columns.items() if isinstance(count, int)}
     pitched_clefs = _pitched_clefs(rd, plans, place)
+    clefs_after_rests = _clefs_after_bar_rests(rd)
 
     unvoiced: dict = {}                 # (staff, bar) -> why the writer could not voice it (`build`)
 
@@ -1689,6 +1728,8 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                     j = bars[0]
                     before = state[k_i]["clef"]
                     state[k_i] = _bar_state(rd, staff, j, state[k_i])
+                    if (staff, j) in clefs_after_rests:
+                        state[k_i]["clef"] = clefs_after_rests[(staff, j)]
                     if state[k_i]["clef"] == "perc" and (n, k_i) in pitched_clefs:
                         state[k_i]["clef"] = before if clef_read[k_i] and before != "perc" else pitched_clefs[(n, k_i)]
                     clef_read[k_i] = True

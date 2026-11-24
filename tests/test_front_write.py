@@ -122,6 +122,44 @@ def test_a_counted_rest_closes_on_its_last_measure():
     assert measures[6].find("barline/repeat").get("direction") == "backward"
 
 
+def test_a_clef_before_a_barline_after_a_counted_rest_applies_to_the_next_bar():
+    layout = front.build(staff_row(100, [20, 200, 380, 560]) + [
+        det("multiRest", (70, 110, 145, 130)),
+        det("clef_F4", (171, 104, 193, 133)),
+        det("barLine_single", (199, 100, 201, 140)),
+        det("mRest_measure", (280, 115, 293, 125)),
+        det("note_whole", (420, 115, 433, 125)),
+    ], 580, 240)
+    tokens = _tokens(layout, clef=lambda s: "G2" if s.bar == 0 else None)
+    for s in layout.syms:
+        if s.fam != "measure":
+            tokens[s.i]["cls"]["v"] = s.cls
+    xml = write.write(_reading(layout, tokens), texts=[{"xyxy": (95, 88, 110, 103), "text": "3"}])
+    measures = ET.fromstring(xml.split("\n", 2)[2]).findall(".//measure")
+    assert len(measures) == 5
+    assert [m.findtext("attributes/clef/sign") for m in measures] == ["G", None, None, "F", None]
+    assert [measures[4].findtext("note/pitch/" + name) for name in ("step", "octave")] == ["D", "3"]
+
+
+def test_a_clef_after_a_bar_rest_applies_before_the_cue_notes():
+    layout = front.build(staff_row(100, [20, 200, 380]) + [
+        det("mRest_measure", (90, 115, 104, 125)),
+        det("clef_G2", (174, 94, 193, 145)),
+        det("barLine_single", (199, 100, 201, 140)),
+        det("note_quarter", (220, 117, 226, 123)),
+        det("note_quarter", (258, 117, 264, 123)),
+    ], 400, 240)
+    tokens = _tokens(layout, clef=lambda s: "F4" if s.bar == 0 else None)
+    for s in layout.syms:
+        if s.fam != "measure":
+            tokens[s.i]["cls"]["v"] = s.cls
+    xml = write.write(_reading(layout, tokens))
+    first, cue = ET.fromstring(xml.split("\n", 2)[2]).findall(".//measure")
+    assert first.findtext("attributes/clef/sign") == "F"
+    assert cue.findtext("attributes/clef/sign") == "G"
+    assert [(p.findtext("step"), p.findtext("octave")) for p in cue.findall("note/pitch")] == [("B", "4"), ("B", "4")]
+
+
 def test_counted_rests_lengthen_the_same_column_in_every_part(monkeypatch):
     from copisteria import links
     monkeypatch.setattr(links, "load", lambda: None)
