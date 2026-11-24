@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 
 from .read import Reading
-from .vocab import TYPE_QUARTERS, key_alter
+from .vocab import POS_MAX, TYPE_QUARTERS, key_alter
 
 REAL = 0.5
 ONSET_GAPS = os.environ.get("COPISTERIA_ONSET", "1") == "1"
@@ -74,6 +74,7 @@ class Event:
     tup: str = "none"
     step: str = "C"
     octave: int = 4
+    octave_shift: int = 0                           # octave lines added after the staff position is decoded
     alter: int = 0
     tie: bool = False
     tie_stop: bool = False
@@ -134,6 +135,104 @@ def _clef_of_cls(cls: str) -> str:
 def _pitch(clef: str, pos: int) -> tuple[str, int]:
     idx = MID_LINE.get(clef, 34) + pos
     return STEPS[idx % 7], idx // 7
+
+
+def _recover_lost_pitches(rd: Reading, built: list, ties: list, gray) -> None:
+    """Recover saturated positions outside the octave range once voices and ties stand."""
+    layout = rd.layout
+    lost = {}
+    for part in built:
+        for measure in part:
+            for staff in measure["staves"]:
+                if staff is None:
+                    continue
+                for events in staff["voices"].values():
+                    for e in events:
+                        if (e.kind == "note" and not e.unpitched and e.si >= 0 and
+                                not 0 <= e.octave <= 9 and not 0 <= e.octave - e.octave_shift <= 9 and
+                                abs(rd.tok[e.si]["pos"]["v"]) == POS_MAX):
+                            lost.setdefault(e.si, []).append((e, staff["state"]["key"]))
+    if not lost:
+        return
+    from .front import _band
+    from .position import locate
+
+    # The published writer also accepts floating-point greyscale arrays. SciPy
+    # sampling requires single or double precision for floating-point input.
+    if gray is not None and gray.dtype.kind == "f" and gray.dtype.itemsize not in (4, 8):
+        gray = gray.astype("float32")
+    glyphs = [s for s in layout.syms if s.fam in ("clef", "accid", "keySig") and
+              (_real(rd, s.i) or s.p >= .65)]
+    clefs = [s for s in glyphs if s.fam == "clef" and _clef_of_cls(s.cls) not in ("perc", "other")]
+    accids = [s for s in glyphs if s.fam == "accid"]
+    heads = [s for s in layout.syms if s.fam == "note" and _real(rd, s.i)]
+    recovered = {}
+    for si, uses in lost.items():
+        head = layout.syms[si]
+        e, key = uses[0]
+        _, top, bottom, sp = _band(layout.syms, layout.staves[head.staff], head.cx)
+        located = locate(gray, head, top, bottom, sp, clefs)
+        if located is None:
+            continue
+        pos, clef, space, slope = located
+        original = 7 * e.octave + STEPS.index(e.step)
+        middle = original - 7 * e.octave_shift - rd.tok[si]["pos"]["v"]
+        traced_middle = MID_LINE[_clef_of_cls(clef.cls)]
+        pitch = traced_middle + pos + 7 * e.octave_shift
+        if pitch == original:
+            continue
+        if clef.staff != head.staff or traced_middle != middle:
+            # The assigned bar can carry the key of the wrong staff as well as its clef.
+            for s in glyphs:
+                printed = re.fullmatch(r"keySig_([1-7])([fs])", s.cls)
+                if (printed and 0 <= s.box[0] - clef.box[2] < 2 * space and
+                        s.cx < head.cx and abs(s.cy - clef.cy) < 2.5 * space):
+                    key = int(printed[1]) * (-1 if printed[2] == "f" else 1)
+                    break
+        octave, degree = divmod(pitch, 7)
+        step = STEPS[degree]
+        alter, accidental = key_alter(step, key), ""
+        nearest = None
+        for symbol in accids:
+            kind = symbol.cls[len("accid_"):]
+            gap = head.box[0] - symbol.box[2]
+            if kind not in ACCID_ALTER or not -.5 * space < gap < 5 * space:
+                continue
+            anchor = symbol.cy + ACC_ANCHOR.get(kind, 0.0) * space
+            match = min((s for s in heads if -.5 * space < s.box[0] - symbol.box[2] < 5 * space
+                         and abs(s.cy - anchor - slope * (s.cx - symbol.cx)) < .4 * space),
+                        key=lambda s: 3 * abs(s.cy - anchor - slope * (s.cx - symbol.cx)) +
+                        max(0.0, s.box[0] - symbol.box[2]), default=None)
+            if match is head and (nearest is None or gap < nearest[0]):
+                nearest = (gap, kind)
+        if nearest is not None:
+            kind = nearest[1]
+            alter, accidental = ACCID_ALTER[kind], ACCID_XML.get(kind, "")
+        recovered[si] = step, octave, alter, accidental
+
+    # A written tie keeps its base pitches unless the ink confirms the same new
+    # note at every head in the chain. Its first head supplies the accidental.
+    following = {end.si: start.si for start, end in ties if start.tie and end.tie_stop}
+    def tie_start(si):
+        start, seen = si, {si}
+        while start in following and following[start] not in seen:
+            start = following[start]
+            seen.add(start)
+        return start
+
+    roots = {si: tie_start(si) for si in lost}
+    blocked = {tie_start(end) for end, start in following.items()
+               if start not in recovered or end not in recovered or recovered[start][:2] != recovered[end][:2]}
+    for si, (step, octave, alter, accidental) in recovered.items():
+        start = roots[si]
+        if start in blocked:
+            continue
+        if start != si:
+            step, octave, alter, _ = recovered[start]
+            if recovered[si][2] != alter:
+                accidental = ""
+        for e, _ in lost[si]:
+            e.step, e.octave, e.alter, e.accidental = step, octave, alter, accidental
 
 
 @dataclass
@@ -1127,6 +1226,7 @@ def _attach(rd: Reading, built: list, plans: list, texts: list, place: list, mas
             if inside:
                 for e in inside:
                     e.octave += shift
+                    e.octave_shift += shift
                 inside[0].pre.append(("octave", (typ, size), shift < 0))
                 inside[-1].post.append(("octave", ("stop", size), shift < 0))
         elif c == "pedal":
@@ -1878,6 +1978,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                         st["voices"][v] = _chop(evs, bar_ends[m_i], st.setdefault("cut", []))
                         all_durs.update(e.dur for e in st["voices"][v])
     all_durs.update(n for n in bar_ends if n)
+    _recover_lost_pitches(rd, built, [(pairs[n][0], pairs[n][1]) for n in kept], gray)
 
     all_durs |= {_time_len(m["staves"][0]["state"]["time"]) for ms in built for m in ms
                  if m["staves"] and m["staves"][0]}

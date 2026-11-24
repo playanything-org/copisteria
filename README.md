@@ -17,6 +17,12 @@ reads and how to use it, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) here f
 
 Reading (what a page's MusicXML holds):
 
+- **A lost staff position is recovered from the head and its staff lines** (`position.py`, `write.py`).
+  For a saturated reading outside MusicXML's octave range before any octave line, the writer looks for
+  staff lines at the head and traces them to their clef. A position inside the measured range supplies
+  the pitch, and the printed accidental or key supplies the alteration. Visible ledger lines can
+  disprove an estimate that rounds a true extreme back into range. Without confirmation the original
+  note stays, including every head in a tie that the ink cannot confirm at a common pitch.
 - **Letter dynamics need ink support when the reading is weak** (`write.py` `_unsupported_dynamics`). The detector
   can mistake lyrics, handwritten strokes and publisher marks for dynamics. The writer uses their distance from the
   system and the stroke width and slant of the boxed ink, measured in staff spaces. Confident detector readings

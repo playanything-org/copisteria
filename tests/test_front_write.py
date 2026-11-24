@@ -572,6 +572,328 @@ def _tokens(L, clef=lambda s: "G2"):
     return tok
 
 
+def test_lost_tied_positions_follow_the_printed_staff_at_each_head():
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    page = Image.new("L", (460, 260), 255)
+    ink = ImageDraw.Draw(page)
+    for y in range(100, 141, 10):
+        ink.line((30, y, 430, y + 20), fill=0, width=2)
+    # The staff's average band is at 110–150. Both heads lie on the
+    # second bass line from the top at their own columns.
+    boxes = staff_row(110, [30, 430]) + [
+        det("clef_F4", (36, 95, 53, 134)),
+        det("note_quarter", (155, 112, 165, 122)),
+        det("note_quarter", (315, 120, 325, 130)),
+        det("note_quarter", (355, 134, 365, 144)),
+    ]
+    layout = front.build(boxes, *page.size)
+    tokens = _tokens(layout, lambda _: "F4")
+    for s in layout.syms:
+        if s.fam == "clef":
+            tokens[s.i]["cls"]["v"] = s.cls
+        if s.fam == "note" and s.cx < 350:
+            tokens[s.i]["pos"]["v"] = -24
+            tokens[s.i]["alter"]["v"] = -1
+            tokens[s.i]["tie"] = float(s.cx < 200)
+    for image in (page, np.asarray(page, dtype=np.float16)):
+        root = ET.fromstring(write.write(_reading(layout, tokens), image=image))
+        notes = root.findall(".//note[pitch]")
+        assert [(n.findtext("pitch/step"), n.findtext("pitch/octave"), n.findtext("pitch/alter"),
+                 [t.attrib["type"] for t in n.findall("tie")]) for n in notes] == [
+            ("F", "3", None, ["start"]), ("F", "3", None, ["stop"]), ("D", "3", None, []),
+        ]
+
+
+def test_a_lost_position_follows_the_ink_to_the_clef_on_a_skewed_staff():
+    from PIL import Image, ImageDraw
+
+    page = Image.new("L", (460, 360), 255)
+    ink = ImageDraw.Draw(page)
+    for y in range(150, 191, 10):
+        ink.line((30, y, 430, y - 108), fill=0, width=2)
+    boxes = staff_row(80, [30, 430]) + [
+        det("clef_G2", (40, 143, 51, 188)),
+        det("keySig_2s", (57, 150, 70, 176)),
+        det("note_quarter", (275, 92, 285, 102)),
+    ]
+    layout = front.build(boxes, *page.size)
+    tokens = _tokens(layout, lambda _: "F4")
+    for s in layout.syms:
+        if s.fam in ("clef", "keySig"):
+            tokens[s.i]["cls"]["v"] = s.cls
+        if s.fam == "note":
+            tokens[s.i]["pos"]["v"] = -24
+    root = ET.fromstring(write.write(_reading(layout, tokens), image=page))
+    assert (root.findtext(".//note/pitch/step"), root.findtext(".//note/pitch/octave")) == ("C", "5")
+    assert root.findtext(".//note/pitch/alter") == "1"
+
+
+def test_long_ledger_stem_keeps_a_lost_head_on_its_printed_staff():
+    from PIL import Image, ImageDraw
+
+    page = Image.new("L", (460, 270), 255)
+    ink = ImageDraw.Draw(page)
+    for top in (50, 150):
+        for y in range(top, top + 41, 10):
+            ink.line((30, y, 430, y), fill=0, width=2)
+    ink.line((284, 70, 284, 170), fill=0, width=2)
+    for y in range(100, 171, 10):
+        ink.line((273, y, 287, y), fill=0, width=2)
+    head = det("note_quarter", (275, 165, 285, 175), staff_position=-20)
+    boxes = staff_row(50, [30, 430]) + staff_row(150, [30, 430]) + [
+        det("clef_G2", (36, 48, 51, 96)), det("clef_F4", (36, 145, 51, 183)), head,
+    ]
+    layout = front.build(boxes, *page.size)
+    tokens = _tokens(layout, lambda s: "G2" if s.cy < 100 else "F4")
+    for s in layout.syms:
+        if s.fam == "clef":
+            tokens[s.i]["cls"]["v"] = s.cls
+        if s.fam == "note":
+            assert s.staff == 1
+            tokens[s.i]["pos"]["v"] = -24
+    root = ET.fromstring(write.write(_reading(layout, tokens), image=page))
+    assert (root.findtext(".//note/pitch/step"), root.findtext(".//note/pitch/octave")) == ("C", "2")
+
+
+def _assert_base_musicxml(monkeypatch, layout, tokens, image=None):
+    candidate = write.write(_reading(layout, tokens), image=image)
+    with monkeypatch.context() as base:
+        base.setattr(write, "_recover_lost_pitches", lambda *_: None)
+        assert candidate == write.write(_reading(layout, tokens), image=image)
+    return ET.fromstring(candidate)
+
+
+def test_a_printed_octave_line_keeps_the_positions_read_on_the_staff(monkeypatch):
+    boxes = staff_row(100, [30, 300]) + [
+        det("octave_15b", (105, 183, 184, 204)),
+        det("note_quarter", (110, 160, 120, 170)),
+        det("note_quarter", (173, 160, 183, 170)),
+        det("note_quarter", (230, 115, 240, 125)),
+    ]
+    layout = front.build(boxes, 330, 260)
+    tokens = _tokens(layout, lambda _: "F4")
+    for s in layout.syms:
+        tokens[s.i]["cls"]["v"] = s.cls
+        if s.fam == "note" and s.cx < 200:
+            tokens[s.i]["pos"]["v"] = -9
+            tokens[s.i]["tie"] = float(s.cx < 150)
+    root = _assert_base_musicxml(monkeypatch, layout, tokens)
+    assert [(n.findtext("pitch/step"), n.findtext("pitch/octave"),
+             [t.get("type") for t in n.findall("tie")]) for n in root.findall(".//note[pitch]")] == [
+        ("B", "-1", ["start"]), ("B", "-1", ["stop"]), ("D", "3", []),
+    ]
+
+
+def test_octave_clef_keeps_ties_between_distinct_chord_heads(monkeypatch):
+    boxes = staff_row(100, [30, 300]) + [
+        det("note_quarter", (103, 155, 113, 165)),  # C0, first member on the left
+        det("note_quarter", (112, 160, 122, 170)),  # B-1
+        det("note_quarter", (167, 160, 177, 170)),  # B-1, first member on the right
+        det("note_quarter", (176, 155, 186, 165)),  # C0
+    ]
+    layout = front.build(boxes, 330, 260)
+    tokens = _tokens(layout, lambda _: "F4_15b")
+    for s in layout.syms:
+        if s.fam == "note":
+            tokens[s.i]["pos"]["v"] = -8 if s.cy == 160 else -9
+            tokens[s.i]["tie"] = float(s.cx < 150)
+            tokens[s.i]["chord"] = float(s.cx in (117, 181))
+    root = _assert_base_musicxml(monkeypatch, layout, tokens)
+    assert [(n.findtext("pitch/step"), n.findtext("pitch/octave"),
+             [t.get("type") for t in n.findall("tie")]) for n in root.findall(".//note[pitch]")] == [
+        ("C", "0", ["start"]), ("B", "-1", ["start"]), ("B", "-1", ["stop"]), ("C", "0", ["stop"]),
+    ]
+
+
+def _ledger_page():
+    from PIL import Image, ImageDraw
+
+    page = Image.new("L", (330, 275), 255)
+    ink = ImageDraw.Draw(page)
+    for y in range(100, 141, 10):
+        ink.line((30, y, 300, y), fill=0, width=2)
+    for y in range(150, 241, 10):
+        ink.line((115, y, 135, y), fill=0, width=2)
+    ink.ellipse((120, 235, 130, 245), fill=0)
+    return page
+
+
+def test_staff_ink_can_confirm_an_extreme_position(monkeypatch):
+    page = _ledger_page()
+    boxes = staff_row(100, [30, 300]) + [
+        det("clef_F4", (34, 94, 51, 137)),
+        det("note_quarter", (120, 235, 130, 245), staff_position=-24),
+    ]
+    layout = front.build(boxes, *page.size)
+    tokens = _tokens(layout, lambda _: "F4")
+    for s in layout.syms:
+        tokens[s.i]["cls"]["v"] = s.cls
+        if s.fam == "note":
+            tokens[s.i]["pos"]["v"] = -24
+    for image in (page, None):
+        root = _assert_base_musicxml(monkeypatch, layout, tokens, image)
+        assert (root.findtext(".//note/pitch/step"), root.findtext(".//note/pitch/octave")) == ("A", "-1")
+
+
+def test_an_extreme_head_stays_when_the_staff_spacing_is_outside_the_search(monkeypatch):
+    page = _ledger_page()
+    boxes = staff_row(100, [30, 300]) + [
+        det("clef_F4", (34, 94, 51, 137)),
+        det("note_quarter", (120, 237, 130, 243), staff_position=-24),
+    ]
+    layout = front.build(boxes, *page.size)
+    tokens = _tokens(layout, lambda _: "F4")
+    for s in layout.syms:
+        tokens[s.i]["cls"]["v"] = s.cls
+        if s.fam == "note":
+            tokens[s.i]["pos"]["v"] = -24
+    root = _assert_base_musicxml(monkeypatch, layout, tokens, page)
+    assert root.findtext(".//note/pitch/octave") == "-1"
+
+
+def test_an_extreme_tie_across_a_clef_change_stays_as_written(monkeypatch):
+    from PIL import ImageDraw
+
+    page = _ledger_page()
+    ink = ImageDraw.Draw(page)
+    for y in range(150, 231, 10):
+        ink.line((185, y, 205, y), fill=0, width=2)
+    ink.ellipse((190, 225, 200, 235), fill=0)
+    boxes = staff_row(100, [30, 300]) + [
+        det("clef_F4", (34, 94, 51, 137)),
+        det("note_quarter", (120, 237, 130, 243), staff_position=-24),
+        det("clef_F5", (152, 102, 169, 145)),
+        det("note_quarter", (190, 225, 200, 235), staff_position=-22),
+    ]
+    layout = front.build(boxes, *page.size)
+    tokens = _tokens(layout, lambda _: "F4")
+    for s in layout.syms:
+        tokens[s.i]["cls"]["v"] = s.cls
+        if s.fam == "note":
+            tokens[s.i]["pos"]["v"] = -24 if s.cx < 150 else -22
+            tokens[s.i]["tie"] = float(s.cx < 150)
+    root = _assert_base_musicxml(monkeypatch, layout, tokens, page)
+    assert [(n.findtext("pitch/octave"), [t.get("type") for t in n.findall("tie")])
+            for n in root.findall(".//note[pitch]")] == [("-1", ["start"]), ("-1", ["stop"])]
+
+
+def test_one_confirmed_head_does_not_change_a_written_tie(monkeypatch):
+    page = _ledger_page()
+    boxes = staff_row(100, [30, 300]) + [
+        det("clef_F4", (34, 94, 51, 137)),
+        det("note_quarter", (120, 105, 130, 115)),
+        det("clef_F5", (152, 102, 169, 145)),
+        det("note_quarter", (175, 225, 185, 235)),
+    ]
+    layout = front.build(boxes, *page.size)
+    tokens = _tokens(layout, lambda _: "F4")
+    first = None
+    for s in layout.syms:
+        tokens[s.i]["cls"]["v"] = s.cls
+        if s.fam == "note":
+            tokens[s.i]["pos"]["v"] = -24 if s.cx < 150 else -22
+            if s.cx < 150:
+                first = tokens[s.i]
+    untied = ET.fromstring(write.write(_reading(layout, tokens), image=page))
+    assert (untied.findtext(".//note/pitch/step"), untied.findtext(".//note/pitch/octave")) == ("F", "3")
+    first["tie"] = 1.0
+    root = _assert_base_musicxml(monkeypatch, layout, tokens, page)
+    assert [(n.findtext("pitch/octave"), [t.get("type") for t in n.findall("tie")])
+            for n in root.findall(".//note[pitch]")] == [("-1", ["start"]), ("-1", ["stop"])]
+
+
+def test_an_extreme_tied_chord_keeps_the_c0_tie(monkeypatch):
+    from PIL import ImageDraw
+
+    page = _ledger_page()
+    ink = ImageDraw.Draw(page)
+    boxes = staff_row(100, [30, 300]) + [det("clef_F4", (34, 94, 51, 137))]
+    for x in (125, 185):
+        for y in range(150, 241, 10):
+            ink.line((x - 10, y, x + 17, y), fill=0, width=2)
+        for dx, y in ((0, 230), (7, 240)):
+            box = (x + dx - 5, y - 3, x + dx + 5, y + 3)
+            ink.ellipse(box, fill=0)
+            boxes.append(det("note_quarter", box, staff_position=-22 if not dx else -24))
+    layout = front.build(boxes, *page.size)
+    tokens = _tokens(layout, lambda _: "F4")
+    for s in layout.syms:
+        tokens[s.i]["cls"]["v"] = s.cls
+        if s.fam == "note":
+            tokens[s.i]["pos"]["v"] = -22 if s.cy == 230 else -24
+            tokens[s.i]["tie"] = float(s.cx < 150)
+            tokens[s.i]["chord"] = float(s.cy == 240)
+    root = _assert_base_musicxml(monkeypatch, layout, tokens, page)
+    assert [(n.findtext("pitch/step"), n.findtext("pitch/octave"),
+             [t.get("type") for t in n.findall("tie")]) for n in root.findall(".//note[pitch]")] == [
+        ("C", "0", ["start"]), ("A", "-1", ["start"]), ("C", "0", ["stop"]), ("A", "-1", ["stop"]),
+    ]
+
+
+def test_raster_rounding_keeps_the_printed_extreme_ledger_position(monkeypatch):
+    from PIL import Image, ImageDraw
+
+    page = Image.new("L", (265, 235), 255)
+    ink = ImageDraw.Draw(page)
+    rows = [round(100.35 + n * 6.1) for n in range(15)]
+    for y in rows[:5]:
+        ink.line((30, y, 235, y), fill=0)
+    for y in rows[5:]:
+        ink.line((120, y, 132, y), fill=0)
+    box = (122, rows[-1] - 3, 130, rows[-1] + 3)
+    ink.ellipse(box, fill=0)
+    ink.line((130, rows[-1], 130, rows[-1] - 19), fill=0)
+    layout = front.build([det("measure", (30, rows[0], 235, rows[4])),
+                          det("clef_F4", (34, rows[0], 52, rows[4])),
+                          det("note_quarter", box, staff_position=-24)], *page.size)
+    tokens = _tokens(layout, lambda _: "F4")
+    for s in layout.syms:
+        tokens[s.i]["cls"]["v"] = s.cls
+        if s.fam == "note":
+            tokens[s.i]["pos"]["v"] = -24
+    root = _assert_base_musicxml(monkeypatch, layout, tokens, page)
+    assert root.findtext(".//note/pitch/octave") == "-1"
+
+
+def test_foreshortened_ledger_lines_keep_two_tied_chord_pitches_distinct(monkeypatch):
+    from PIL import Image, ImageDraw
+
+    page = Image.new("L", (330, 280), 255)
+    ink = ImageDraw.Draw(page)
+
+    def y(row):
+        distance = row - 120
+        return round(120 + distance / (1 + .0006 * distance))
+
+    for row in range(100, 141, 10):
+        ink.line((30, y(row), 300, y(row)), fill=0, width=2)
+    boxes = staff_row(100, [30, 300]) + [det("clef_F4", (33, 100, 54, 137))]
+    for x in (125, 185):
+        for row in range(150, 241, 10):
+            ink.line((x - 10, y(row), x + 17, y(row)), fill=0)
+        for dx, row in ((0, 230), (7, 240)):
+            box = (x + dx - 5, y(row) - 4, x + dx + 5, y(row) + 4)
+            ink.ellipse(box, fill=0)
+            ink.line((box[2], y(row), box[2], y(row - 27)), fill=0)
+            boxes.append(det("note_quarter", box, staff_position=(120 - row) // 5))
+    layout = front.build(boxes, *page.size)
+    tokens = _tokens(layout, lambda _: "F4")
+    for s in layout.syms:
+        tokens[s.i]["cls"]["v"] = s.cls
+        if s.fam == "note":
+            pos = int(s.attrs["staff_position"])
+            tokens[s.i]["pos"]["v"] = pos
+            tokens[s.i]["tie"] = float(s.cx < 150)
+            tokens[s.i]["chord"] = float(pos == -24)
+    root = _assert_base_musicxml(monkeypatch, layout, tokens, page)
+    assert [(n.findtext("pitch/octave"), [t.get("type") for t in n.findall("tie")])
+            for n in root.findall(".//note[pitch]")] == [
+        ("0", ["start"]), ("-1", ["start"]), ("0", ["stop"]), ("-1", ["stop"]),
+    ]
+
+
 def test_dynamics_need_ink_support_when_the_reader_is_unsure(monkeypatch):
     import numpy as np
     from copisteria import links
