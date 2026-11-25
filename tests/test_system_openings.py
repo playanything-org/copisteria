@@ -1,7 +1,10 @@
+# Modified by Play Anything (https://github.com/playanything-org/copisteria): see README.md.
 from math import sin
+from types import SimpleNamespace
 
 import numpy as np
 from copisteria import front
+from copisteria.revise import read_for_opening_trials
 
 
 def _staff(mask, top, left, right):
@@ -66,3 +69,53 @@ def test_a_bowed_binding_band_can_touch_both_staff_rules_without_joining_them():
     a = front.Staff([], 10, 60, 100, 120, 600)
     b = front.Staff([], 10, 250, 290, 120, 600)
     assert not _linked(mask, a, b)
+
+
+def test_each_recovered_join_must_keep_the_baseline_note_ids_even_at_equal_counts():
+    mask = np.zeros((810, 640), dtype=bool)
+    tops = (60, 250, 440, 630)
+    for top in tops:
+        _staff(mask, top, 120, 600)
+    mask[60:291, 120] = True
+    mask[440:671, 120] = True
+    staves = [front.Staff([], 10, top, top + 40, start, 600, line_x0=measured)
+              for top, start, measured in zip(tops, (119, 101, 119, 101), (120, 101, 120, 101))]
+
+    def read(*, opening_joins=None):
+        linked, _ = front._links([], staves, mask, opening_joins=opening_joins)
+        return SimpleNamespace(linked=linked, layout=SimpleNamespace(syms=[]))
+
+    def write(reading):
+        first, _, last = reading.linked
+        ids = {8 if first else 4, 5}
+        if last:
+            ids.add(9)
+        return (ids,), reading.linked
+
+    old = read()
+    assert old.linked == [True, False, True]
+    base = read_for_opening_trials(read)
+    assert base.linked == [False, False, False]
+    selected, ((notes,), linked) = base.opening_trial(base, write, write(base))
+    assert selected.linked == linked == [False, False, True]
+    assert notes == {4, 5, 9}
+
+
+def test_a_recovered_join_cannot_merge_written_bars_even_if_all_notes_fit():
+    upper = front.Staff([], 10, 60, 100, 120, 600)
+    lower = front.Staff([], 10, 250, 290, 120, 600)
+
+    def read(*, opening_joins):
+        joined = opening_joins.accepts(upper, lower)
+        notes = [SimpleNamespace(det=8, staff=0, bar=0),
+                 SimpleNamespace(det=9, staff=0, bar=0 if joined else 1)]
+        layout = SimpleNamespace(syms=notes, column=lambda staff, bar: bar)
+        return SimpleNamespace(joined=joined, layout=layout)
+
+    def written(reading):
+        return ({8, 9},), reading.joined
+
+    baseline = read_for_opening_trials(read)
+    reading, ((ids,), joined) = baseline.opening_trial(baseline, written, written(baseline))
+    assert reading is baseline
+    assert ids == {8, 9} and not joined

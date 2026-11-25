@@ -41,6 +41,11 @@ Reading (what a page's MusicXML holds):
   stated ten-staff system was read as ten systems of one staff, page after page. The join now stands where the
   three staves above it and the three below it line up with each other: of the pairs across it that show three
   bar lines or more, at least half. Two systems with bar lines of their own have hardly such a pair.
+- **A recovered opening must keep the notes already written on the page** (`front.py`, `revise.py`, `write.py`).
+  The reader searches at the measured starts of both staves and samples interior barlines against their staff
+  rules. Each proposed join is read and written from the same detections. It stands if every detection written
+  as a note on the page before the recovery is still written as a note. The trial also preserves bar divisions
+  between notes within each original staff, since a shared grid can erase a division without dropping a note.
 - **No voice holds two events at once** (`write.py` `_unlapped`). On a part of several staves the model's onset
   places each event, and where it puts one before the last has ended (a hand's two voices read as one, an onset
   read wrong) the voice was written with a backup inside it. A reader of the score that keeps one event at a time

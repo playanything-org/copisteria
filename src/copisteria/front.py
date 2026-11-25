@@ -133,6 +133,19 @@ class Layout:
         return self.systems[st.system].columns[st.pos][bar]
 
 
+@dataclass
+class OpeningJoins:
+    """Which recovered joins to apply, and which the page offered. Use staff edges as the key
+    so that fitting a layout with more or fewer staves does not renumber a join."""
+    allowed: frozenset[tuple[float, float]] = frozenset()
+    found: set[tuple[float, float]] = field(default_factory=set)
+
+    def accepts(self, upper: Staff, lower: Staff) -> bool:
+        gap = (upper.y1, lower.y0)
+        self.found.add(gap)
+        return gap in self.allowed
+
+
 # ------------------------------------------------------------------------------------------------- merge
 def merge(dets: list[dict], offset: int = 0) -> list[Sym]:
     """Boxes of one family with IoU >= MERGE_IOU -> one symbol, greedy from the most confident box. A symbol's
@@ -831,7 +844,8 @@ def _crossing_bars(mask, syms: list[Sym], a: Staff, b: Staff) -> bool:
     return hits >= 2 and hits * 2 >= len(sampled)
 
 
-def _links(syms: list[Sym], staves: list[Staff], gray=None, levels=None) -> tuple[list[bool], list[str]]:
+def _links(syms: list[Sym], staves: list[Staff], gray=None, levels=None,
+           opening_joins: OpeningJoins | None = None) -> tuple[list[bool], list[str]]:
     """Per pair of neighbouring staves (k - 1, k): whether one system holds both, and what said so -- "line" (ink
     through the gap between them), "white" (none) or "unclear" (the links model, a brace, bar lines that line up).
     ``gray``: the page's ink mask; ``levels``: its grey levels (for a line too pale for the mask)."""
@@ -876,7 +890,8 @@ def _links(syms: list[Sym], staves: list[Staff], gray=None, levels=None) -> tupl
             if (left < INK_SPLIT and bars < 0.1 and line < INK_LINK and
                     not any(st.one_line or st.y1 - st.y0 < 3 * st.sp for st in (a, b))):
                 if _measured_opening(gray, a, b, staves) or _crossing_bars(gray, syms, a, b):
-                    line = INK_LINK
+                    if opening_joins is None or opening_joins.accepts(a, b):
+                        line = INK_LINK
             if left >= INK_LINK or line >= INK_LINK or bars >= 0.5:
                 decided[k - 1], said[k - 1] = True, "line"
             elif left < INK_SPLIT and bars < 0.1 and margin >= INK_SPLIT and _braced(syms, a, b):
@@ -1978,7 +1993,8 @@ _FORCED: dict = {}            # system (its top staff's index) -> x of bar lines
 
 
 def build(dets: list[dict], width: float, height: float, image=None, cands: list[dict] | None = None,
-          cuts: dict | None = None, layout: list | None = None, most: int | None = None, insist: bool = False) -> Layout:
+          cuts: dict | None = None, layout: list | None = None, most: int | None = None, insist: bool = False,
+          opening_joins: OpeningJoins | None = None) -> Layout:
     """``image``: the page (PIL image or grey array); with it, the ink between staves decides the systems.
     ``layout``: the staves of each of the page's systems, top to bottom, where the caller knows them
     (_with_layout), and ``most``: the most staves a system of the score can have; ``Layout.prior`` then says what
@@ -2024,7 +2040,7 @@ def build(dets: list[dict], width: float, height: float, image=None, cands: list
             spare[:] = ([st for st in spare if not st.lined] if ink_path else []) + lined
         before = list(staves)
         def page_links(sts):
-            links, said = _links(syms, sts, mask, gray)
+            links, said = _links(syms, sts, mask, gray, opening_joins)
             if mask is None or len(sts) < 3:
                 return links, said
             grouped = _stacked(syms, sts, links, said, mask, gray.shape[0])
@@ -2035,12 +2051,14 @@ def build(dets: list[dict], width: float, height: float, image=None, cands: list
         if not ink_path:
             _borrow_bars(syms, staves, before)
     shown = [sum(not syms[i].synthetic for i in st.bars) for st in staves]
-    if linked is None and mask is not None and len(staves) > 2:
-        linked, said = _links(syms, staves, mask, gray)
-        linked = _stacked(syms, staves, _repeats(syms, staves, linked, said), said, mask, gray.shape[0])
+    if linked is None:
+        linked, said = _links(syms, staves, mask, gray, opening_joins)
+        if mask is not None and len(staves) > 2:
+            linked = _stacked(syms, staves, _repeats(syms, staves, linked, said), said, mask, gray.shape[0])
     systems = _systems(syms, staves, mask, ink=ink_path, levels=gray, linked=linked)
     if prior is not None and prior.get("joined") and not insist and _loses_bars(systems, shown, prior["joined"]):
-        L = build(dets, width, height, image=image, cands=cands, cuts=cuts)           # the page as read without it
+        L = build(dets, width, height, image=image, cands=cands, cuts=cuts,
+                  opening_joins=opening_joins)                                    # the page as read without it
         L.prior = {**prior, "used": False, "dropped": 0, "added": 0, "joined": [],
                    "why": "the layout joins staves into a system with fewer bars than they show"}
         return L

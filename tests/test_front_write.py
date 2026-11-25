@@ -396,10 +396,12 @@ def test_write_one_bar():
             tok[s.i] = {"real": {"p": 1.0, "det": 1.0, "ev": 0}, "cls": {"v": "note_quarter"}, "dots": {"v": 0},
                         "pos": {"v": pos}, "voice": {"v": 1}, "tup": {"v": "none"}, "alter": {"v": "key" if pos == 0 else 0},
                         "grace": {"v": "none"}, "chord": 0.0, "tie": 0.0}
-    xml = write.write(_reading(L, tok))
+    notes_written = set()
+    xml = write.write(_reading(L, tok), note_ids=notes_written)
     root = ET.fromstring(xml.split("\n", 2)[2])
     notes = root.findall(".//note")
     assert [n.findtext("pitch/step") for n in notes] == ["B", "D"]
+    assert notes_written == {1, 2}
     assert notes[0].findtext("pitch/alter") == "-1"
     assert root.findtext(".//key/fifths") == "-1" and root.findtext(".//time/beats") == "2"
 

@@ -1,3 +1,4 @@
+# Modified by Play Anything (https://github.com/playanything-org/copisteria): see README.md.
 """Structure from the readings: bar lines the detector missed, found because the music says a bar is there.
 
 The front end cuts bars from what it sees -- a detected bar line, a stroke over the staff's height -- and on one
@@ -108,3 +109,58 @@ def read_revised(dets, width, height, model, device="cpu", attention=True, image
         rd = read.read(dets, width, height, model, device=device, attention=attention, image=image, cuts=cuts, **kw)
         rd.revised = cuts
     return rd
+
+
+def read_for_opening_trials(read, *args, **kwargs):
+    """Read as before the opening recovery. The writer can then try each proposed gap
+    from these same inputs, including when a caller picks one of several readings."""
+    from .front import OpeningJoins
+
+    found = OpeningJoins()
+    base = read(*args, **kwargs, opening_joins=found)
+    if found.found:
+        def trial(base, write, base_written):
+            accepted = frozenset()
+            best = base, base_written
+            base_notes, _ = base_written
+            note_ids = set().union(*base_notes)
+            base_columns = [_note_columns(base.layout, ids) for ids in base_notes]
+            for gap in sorted(found.found):
+                allowed = accepted | {gap}
+                try:
+                    candidate = read(*args, **kwargs, opening_joins=OpeningJoins(allowed))
+                    written = write(candidate)
+                except TimeoutError:
+                    break
+                except Exception:
+                    continue
+                candidate_notes, _ = written
+                if any(not old.issubset(new) for old, new in zip(base_notes, candidate_notes, strict=True)):
+                    continue
+                columns = _note_columns(candidate.layout, note_ids)
+                if any(_merges_written_bars(before, columns) for before in base_columns):
+                    continue
+                accepted, best = allowed, (candidate, written)
+            return best
+
+        base.opening_trial = trial
+    return base
+
+
+def _note_columns(layout, note_ids):
+    return {s.det: (s.staff, layout.column(s.staff, s.bar)) for s in layout.syms
+            if s.det in note_ids and s.staff >= 0 and s.bar >= 0}
+
+
+def _merges_written_bars(before, after):
+    """A shared grid can combine two previous bars without cutting a single note.
+    Preserve a written division between notes on the same original staff."""
+    bars = {}
+    for det, (staff, bar) in before.items():
+        location = after.get(det)
+        if location is None:
+            return True
+        slot = staff, location
+        if bars.setdefault(slot, bar) != bar:
+            return True
+    return False

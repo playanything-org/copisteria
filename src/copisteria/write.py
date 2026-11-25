@@ -1765,7 +1765,8 @@ def _part_names(rd: Reading, plans: list, texts: list, place: list) -> list[str 
 
 def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None, image=None,
           facts: dict | None = None, align: bool = True, roster: list[int] | None = None,
-          clefs: list | None = None, among: list | None = None, rest_counts: dict | None = None) -> str:
+          clefs: list | None = None, among: list | None = None, rest_counts: dict | None = None,
+          note_ids: set[int] | None = None) -> str:
     """``image``: the page (PIL image or grey array), for what is read off the ink here (dashes after words).
     ``align``: False counts every system's staves into the parts from the top, whatever they say (as the writer
     did before _align_systems), for a caller that places a system's staves itself.
@@ -1781,7 +1782,8 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
     ``fill``, (voice, start, length) of each rest written unprinted for time no event was read in), ``bar_ends``,
     ``untied`` ((note, partner or None) of each tie read and not written) and ``div``. ``rest_counts``: counts read
     off the H-bars, by box, when supplied instead of OCR text. ``facts["rest_columns"]`` records the count written in
-    every part or why a count was set aside, by (system, column)."""
+    every part or why a count was set aside, by (system, column). ``note_ids`` receives the detector IDs of
+    the notes emitted by a successful write."""
     L = rd.layout
     gray = mask = None
     if image is not None:
@@ -1814,6 +1816,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
     plist = _sub(root, "part-list")
     names = _part_names(rd, plans, texts, place)
     groups = _part_groups(rd, plans, place)
+    written = set() if note_ids is not None else None
     for n, pl in enumerate(plans):
         for g, (a, b, sym) in enumerate(groups):
             if a == n:
@@ -2175,6 +2178,8 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                             _direction(meas, (e.x, kind, payload, below), staff_no if len(pl.staves) > 1 else None)
                         _note(meas, e, units(dur), voice_no, staff_no if len(pl.staves) > 1 else None,
                               whole_rest=not meter_shown)
+                        if written is not None and e.kind == "note" and e.si >= 0 and L.syms[e.si].det >= 0:
+                            written.add(L.syms[e.si].det)
                         for kind, payload, below in e.post:
                             _direction(meas, (e.x, kind, payload, below), staff_no if len(pl.staves) > 1 else None)
                         if not e.chord:
@@ -2223,9 +2228,12 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
         if roster is not None:
             facts["roster"] = unexplained
     ET.indent(root)
-    return '<?xml version="1.0" encoding="UTF-8"?>\n' + \
+    xml = '<?xml version="1.0" encoding="UTF-8"?>\n' + \
         '<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" ' \
         '"http://www.musicxml.org/dtds/partwise.dtd">\n' + ET.tostring(root, encoding="unicode")
+    if written is not None:
+        note_ids.update(written)
+    return xml
 
 
 def _direction(meas, d, staff_no):

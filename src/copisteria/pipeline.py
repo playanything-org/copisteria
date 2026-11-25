@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 from . import read, view, write
-from .revise import read_revised
+from .revise import read_for_opening_trials, read_revised
 
 from .paths import DETECTORS, EVIDENCE, REPO as ROOT, detector
 
@@ -110,20 +110,30 @@ def transcribe(png: Path, model, texts: list | None = None, device="cpu") -> str
     from PIL import Image
     dets, cands, feats = inputs(png, model)
     im = Image.open(png).convert("L")
-    rd = read_revised(dets, im.width, im.height, model, device=device, attention=False, image=im, cands=cands,
-                      feats=feats)
-    return write.write(rd, texts=texts, image=im)
+    return _read_page(dets, cands, feats, im, model, texts, device, attention=False)[1]
+
+
+def _read_page(dets, cands, feats, im, model, texts, device, attention=True):
+    rd = read_for_opening_trials(read_revised, dets, im.width, im.height, model, device=device,
+                                 attention=attention, image=im, cands=cands, feats=feats)
+    if rd.opening_trial is None:
+        return rd, write.write(rd, texts=texts, image=im)
+
+    def written(reading):
+        notes = set()
+        return (notes,), write.write(reading, texts=texts, image=im, note_ids=notes)
+
+    rd, (_, xml) = rd.opening_trial(rd, written, written(rd))
+    return rd, xml
 
 
 def run_page(png: Path, model, out: Path, device="cpu") -> dict:
     from PIL import Image
     dets, cands, feats = inputs(png, model)
     im = Image.open(png).convert("L")
-    w, h = im.size
     tp = png.with_name(f"{png.stem}.texts.json")
     texts = json.loads(tp.read_text()) if tp.exists() else None
-    rd = read_revised(dets, w, h, model, device=device, image=im, cands=cands, feats=feats)
-    xml = write.write(rd, texts=texts, image=im)
+    rd, xml = _read_page(dets, cands, feats, im, model, texts, device)
     out.mkdir(parents=True, exist_ok=True)
     (out / f"{png.stem}.musicxml").write_text(xml)
     (out / f"{png.stem}.html").write_text(view.page_html(rd, png, xml, png.stem))
