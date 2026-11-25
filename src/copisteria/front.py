@@ -785,8 +785,8 @@ def _staff_near_opening(mask, st: Staff, x: int, edge: float):
     return None
 
 
-def _measured_opening(mask, a: Staff, b: Staff, staves: list[Staff]) -> bool:
-    """Recheck a white gap at the independently measured starts, or remeasure them locally beside the stroke."""
+def _measured_opening(mask, a: Staff, b: Staff, staves: list[Staff]) -> int | None:
+    """Find the opening column at the independently measured starts, or remeasure them locally beside the stroke."""
     _, w = mask.shape
     sp = (a.sp + b.sp) / 2
     starts = {round(x) for st in (a, b) for x in (st.x0, st.line_x0) if x is not None}
@@ -806,10 +806,10 @@ def _measured_opening(mask, a: Staff, b: Staff, staves: list[Staff]) -> bool:
         upper, lower = _contact_lines(mask, a, x, a.y1, True), _contact_lines(mask, b, x, b.y0, True)
         if upper and lower and _crosses(mask, x, min(upper, key=lambda line: abs(line.y - a.y1)),
                                         min(lower, key=lambda line: abs(line.y - b.y0)), sp):
-            return True
+            return x
         if (all(st.line_x0 is None for st in (a, b)) and
                 min(abs(x - start) for start in starts) <= MEETS_OFF * sp and _meets_staves(mask, x, a, b)):
-            return True
+            return x
         edge = (a.mid + b.mid) / 2
         local_a, local_b = _staff_near_opening(mask, a, x, edge), _staff_near_opening(mask, b, x, edge)
         if local_a is None or local_b is None:
@@ -818,8 +818,15 @@ def _measured_opening(mask, a: Staff, b: Staff, staves: list[Staff]) -> bool:
         lower = _contact_lines(mask, b, x, local_b.top, True)
         if upper and lower and _crosses(mask, x, min(upper, key=lambda line: abs(line.y - local_a.bottom)),
                                         min(lower, key=lambda line: abs(line.y - local_b.top)), sp):
-            return True
-    return False
+            return x
+    return None
+
+
+def _staff_continues_left(mask, st: Staff, x: int) -> bool:
+    """An opening is at the left of its staves. A shadow can cross one that extends past it."""
+    pad = MEETS_OFF * st.sp
+    rules = _local_lines(mask, st, x - math.ceil(st.sp), x, st.y0 - pad, st.y1 + pad)
+    return sum(rule.x1 >= x - 2 for rule in rules) >= MEETS_LINES
 
 
 def _crossing_bars(mask, syms: list[Sym], a: Staff, b: Staff) -> bool:
@@ -873,6 +880,8 @@ def _links(syms: list[Sym], staves: list[Staff], gray=None, levels=None,
         import numpy as np
         page_left = min(st.x0 for st in staves)
         tone: list = []                                # the page's paper and dark levels, once needed
+        established: set[int] = set()
+        partial: list[int] = []
         for k in range(1, n):
             a, b = staves[k - 1], staves[k]
             if (a.one_line or b.one_line) and b.y0 - a.y1 < TOUCH_PX:
@@ -887,12 +896,18 @@ def _links(syms: list[Sym], staves: list[Staff], gray=None, levels=None,
                 if line < INK_LINK and levels is not None:
                     tone = tone or [float(np.percentile(levels, 50)), float(np.percentile(levels, 1))]
                     line = max(line, _pale_at(levels, *tone, a, b, page_left, staves)[0])
-            if (left < INK_SPLIT and bars < 0.1 and line < INK_LINK and
+            solid = left >= INK_LINK or line >= INK_LINK or bars >= 0.5
+            if solid:
+                established.add(k)
+            if (left < INK_SPLIT and line < INK_LINK and bars < 0.5 and
                     not any(st.one_line or st.y1 - st.y0 < 3 * st.sp for st in (a, b))):
-                if _measured_opening(gray, a, b, staves) or _crossing_bars(gray, syms, a, b):
-                    if opening_joins is None or opening_joins.accepts(a, b):
-                        line = INK_LINK
-            if left >= INK_LINK or line >= INK_LINK or bars >= 0.5:
+                if bars < 0.1:
+                    if _measured_opening(gray, a, b, staves) is not None or _crossing_bars(gray, syms, a, b):
+                        if opening_joins is None or opening_joins.accepts(a, b):
+                            line = INK_LINK
+                elif opening_joins is not None and not decided[k - 1] and not _braced(syms, a, b):
+                    partial.append(k)
+            if solid or line >= INK_LINK:
                 decided[k - 1], said[k - 1] = True, "line"
             elif left < INK_SPLIT and bars < 0.1 and margin >= INK_SPLIT and _braced(syms, a, b):
                 decided[k - 1] = True    # a brace or bracket the detector saw, its stroke not told from the margin's ink
@@ -900,6 +915,17 @@ def _links(syms: list[Sym], staves: list[Staff], gray=None, levels=None,
                 decided[k - 1], said[k - 1] = False, "white"     # white between them: a brace box claiming otherwise is wrong
             elif _braced(syms, a, b):
                 decided[k - 1] = True
+        # Partial crossing can detach a staff group even where the opening survives. A lone stroke between
+        # two solo systems can be a shadow, so require a neighbouring link established without a trial.
+        if opening_joins is not None:
+            for k in partial:
+                if k - 1 not in established and k + 1 not in established:
+                    continue
+                a, b = staves[k - 1], staves[k]
+                opening = _measured_opening(gray, a, b, staves)
+                if opening is not None and not any(_staff_continues_left(gray, st, opening) for st in (a, b)):
+                    if opening_joins.accepts(a, b):
+                        decided[k - 1], said[k - 1] = True, "line"
     return [bool(v) for v in decided], said
 
 
