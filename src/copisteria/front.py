@@ -590,16 +590,9 @@ def _line_rows(mask, r0: int, r1: int, c0: int, c1: int) -> int:
     return int(rows[0]) + int((rows[1:] & ~rows[:-1]).sum()) if len(rows) else 0
 
 
-def _meets_staves(mask, x: int, a: Staff, b: Staff) -> bool:
-    """Whether the vertical ink at column x, between staves a and b, is a stroke their lines begin at: no wider than
-    a brace (MEETS_WIDE), and within MEETS_REACH staff spaces past it each staff's lines run on to the right. A
-    system's opening line, bracket or brace stands at its staves' start; the edge of the sheet, of a binder or a
-    folder the page lies in, or a shadow stands in the margin, as a dark band or with paper between it and the
-    staves, and in a photograph taken by hand it runs past every gap of the page. Taken for a system's line it
-    joined every staff of a part into one system of many staves."""
-    H, W = mask.shape
-    sp = (a.sp + b.sp) / 2
-    y0, y1 = a.y1 + 1, b.y0 - 1
+def _stroke_right(mask, x: int, y0: float, y1: float, sp: float) -> int | None:
+    """Right edge of the stroke sampled at x, or None for a dark band wider than a brace."""
+    _, W = mask.shape
     inked = lambda c: _ink_run(mask, c, y0, y1, reach=0) >= 0.25                   # noqa: E731
     # x was found with a reach of two columns: the stroke is the run of inked columns nearest it
     near = [c for c in range(max(0, x - 2), min(W, x + 3)) if inked(c)]
@@ -607,12 +600,23 @@ def _meets_staves(mask, x: int, a: Staff, b: Staff) -> bool:
     while near and left > 0 and inked(left - 1):
         left -= 1
         if right - left + 1 > MEETS_WIDE * sp:
-            return False                              # a dark band (the background past the sheet), not a stroke
+            return None
     # (a stroke's ragged edge, where no column is ink across most of the gap, is followed into the stroke too)
     while right + 1 < W and inked(right + 1):
         right += 1
         if right - left + 1 > MEETS_WIDE * sp:
-            return False
+            return None
+    return right
+
+
+def _meets_staves(mask, x: int, a: Staff, b: Staff) -> bool:
+    """Whether a stroke no wider than a brace has both staff rules running on to its right within MEETS_REACH.
+    Checking width also excludes a binding shadow where the shadow touches the staff rules themselves."""
+    H, W = mask.shape
+    sp = (a.sp + b.sp) / 2
+    right = _stroke_right(mask, x, a.y1 + 1, b.y0 - 1, sp)
+    if right is None:
+        return False
     c0, c1 = right + 1, min(W, int(round(right + 1 + MEETS_REACH * sp)))
     if c1 - c0 < 2:
         return False
@@ -712,6 +716,121 @@ def _opening_line(mask, a: Staff, b: Staff, page_left: float) -> float:
     return max((_ink_run(mask, x, a.y1 + 1, b.y0 - 1) for x in range(hi + 1, hi2 + 1, 2)), default=0.0)
 
 
+def _local_lines(mask, st: Staff, left: int, right: int, top: float, bottom: float):
+    """Measure horizontal runs in a strip at the stroke, where a warped staff can be displaced from its box."""
+    from .vision.page.staves import close_gaps, find_lines, long_run_profile
+
+    h, w = mask.shape
+    left, right = max(0, left), min(w, right)
+    top, bottom = max(0, round(top)), min(h, round(bottom) + 1)
+    if right - left < st.sp or top >= bottom:
+        return []
+    strip = close_gaps(mask[top:bottom, left:right], 2)
+    coverage, starts, ends = long_run_profile(strip, max(2, round(st.sp)))
+    lines = find_lines(coverage, starts + left, ends + left, MEETS_ROW)
+    for line in lines:
+        line.y += top
+    return [line for line in lines if line.thickness < st.sp / 2]
+
+
+def _contact_lines(mask, st: Staff, x: int, facing: float, starts_here: bool):
+    """Staff rules that run to the stroke from the right, and from the left too for an interior barline."""
+    reach = round(MEETS_REACH * st.sp)
+    offset = MEETS_OFF * st.sp
+    lines = _local_lines(mask, st, x, x + reach, facing - offset, facing + offset)
+    if starts_here:
+        return [line for line in lines if line.x0 <= x + 2]
+    before = _local_lines(mask, st, x - reach, x + 1, facing - offset, facing + offset)
+    return [line for line in lines if line.x0 <= x + 2 and
+            any(other.x1 >= x - 2 and abs(other.y - line.y) <= st.sp / 4 for other in before)]
+
+
+def _crosses(mask, x: int, upper, lower, sp: float) -> bool:
+    """A solid stroke must reach both facing rules as well as cover the gap between them."""
+    ya, yb = round(upper.y), round(lower.y)
+    return (yb > ya + 2 and _ink_run(mask, x, ya + 1, yb) >= INK_LINK and
+            _stroke_right(mask, x, ya + 1, yb, sp) is not None and
+            mask[ya, max(0, x - 2):x + 3].any() and mask[yb, max(0, x - 2):x + 3].any())
+
+
+def _staff_near_opening(mask, st: Staff, x: int, edge: float):
+    """Recover the local staff near the opening without moving the track used for placing notes."""
+    from .vision.page.staves import group_staves
+
+    sp = st.sp
+    pad = 2 * MEETS_REACH * sp
+    top, bottom = st.y0 - pad, st.y1 + pad
+    if st.mid < edge:
+        bottom = min(bottom, edge)
+    else:
+        top = max(top, edge)
+    for start in (x + 2, round(x + MEETS_REACH * sp)):
+        lines = _local_lines(mask, st, start, round(start + MEETS_REACH * sp), top, bottom)
+        found = [s for s in group_staves(lines) if abs(s.spacing - sp) <= sp / 4]
+        if found:
+            return min(found, key=lambda s: abs((s.top + s.bottom) / 2 - st.mid))
+    return None
+
+
+def _measured_opening(mask, a: Staff, b: Staff, staves: list[Staff]) -> bool:
+    """Recheck a white gap at the independently measured starts, or remeasure them locally beside the stroke."""
+    _, w = mask.shape
+    sp = (a.sp + b.sp) / 2
+    starts = {round(x) for st in (a, b) for x in (st.x0, st.line_x0) if x is not None}
+    # A strongly warped staff may only have been found partway across the page. Recheck the page's left edge
+    # with both staff positions measured afresh there.
+    page_left = round(min(st.x0 for st in staves))
+    anchors = starts | {page_left}
+    columns = {x for start in anchors for x in range(max(2, round(start - MEETS_REACH * sp)),
+                                                    min(w - 2, round(start + MEETS_OFF * sp)) + 1)}
+    for x in sorted(columns, key=lambda x: (min(abs(x - s) for s in anchors), x)):
+        if _ink_run(mask, x, a.y1 + 1, b.y0 - 1) < INK_LINK:
+            continue
+        top, bottom = staves[0], staves[-1]
+        if (_ink_run(mask, x, top.y0 - RUNS_ON[1] * top.sp, top.y0 - RUNS_ON[0] * top.sp) >= INK_LINK and
+                _ink_run(mask, x, bottom.y1 + RUNS_ON[0] * bottom.sp, bottom.y1 + RUNS_ON[1] * bottom.sp) >= INK_LINK):
+            continue
+        upper, lower = _contact_lines(mask, a, x, a.y1, True), _contact_lines(mask, b, x, b.y0, True)
+        if upper and lower and _crosses(mask, x, min(upper, key=lambda line: abs(line.y - a.y1)),
+                                        min(lower, key=lambda line: abs(line.y - b.y0)), sp):
+            return True
+        if (all(st.line_x0 is None for st in (a, b)) and
+                min(abs(x - start) for start in starts) <= MEETS_OFF * sp and _meets_staves(mask, x, a, b)):
+            return True
+        edge = (a.mid + b.mid) / 2
+        local_a, local_b = _staff_near_opening(mask, a, x, edge), _staff_near_opening(mask, b, x, edge)
+        if local_a is None or local_b is None:
+            continue
+        upper = _contact_lines(mask, a, x, local_a.bottom, True)
+        lower = _contact_lines(mask, b, x, local_b.top, True)
+        if upper and lower and _crosses(mask, x, min(upper, key=lambda line: abs(line.y - local_a.bottom)),
+                                        min(lower, key=lambda line: abs(line.y - local_b.top)), sp):
+            return True
+    return False
+
+
+def _crossing_bars(mask, syms: list[Sym], a: Staff, b: Staff) -> bool:
+    """Sample shared barlines on both staffs' local ink even when an inferred x extent stops short."""
+    sp = (a.sp + b.sp) / 2
+    lines = [s for s in syms if s.fam == "barLine" and s.p >= 0.5 and s.staff < 0]
+    upper = [s for s in lines if a.y0 - sp <= s.cy <= a.y1 + MEETS_OFF * sp]
+    lower = [s for s in lines if b.y0 - MEETS_OFF * sp <= s.cy <= b.y1 + sp]
+    sampled = []
+    for u in sorted(upper, key=lambda s: s.cx):
+        partners = [s for s in lower if u.cy < s.cy and abs(u.cx - s.cx) <= sp]
+        if not partners or sampled and u.cx - sampled[-1][0] <= sp:
+            continue
+        v = min(partners, key=lambda s: abs(u.cx - s.cx))
+        x = round((u.cx + v.cx) / 2)
+        top = _contact_lines(mask, a, x, a.y1, False)
+        bottom = _contact_lines(mask, b, x, b.y0, False)
+        if top and bottom:
+            sampled.append((x, _crosses(mask, x, min(top, key=lambda line: abs(line.y - a.y1)),
+                                        min(bottom, key=lambda line: abs(line.y - b.y0)), sp)))
+    hits = sum(crosses for _, crosses in sampled)
+    return hits >= 2 and hits * 2 >= len(sampled)
+
+
 def _links(syms: list[Sym], staves: list[Staff], gray=None, levels=None) -> tuple[list[bool], list[str]]:
     """Per pair of neighbouring staves (k - 1, k): whether one system holds both, and what said so -- "line" (ink
     through the gap between them), "white" (none) or "unclear" (the links model, a brace, bar lines that line up).
@@ -754,6 +873,10 @@ def _links(syms: list[Sym], staves: list[Staff], gray=None, levels=None) -> tupl
                 if line < INK_LINK and levels is not None:
                     tone = tone or [float(np.percentile(levels, 50)), float(np.percentile(levels, 1))]
                     line = max(line, _pale_at(levels, *tone, a, b, page_left, staves)[0])
+            if (left < INK_SPLIT and bars < 0.1 and line < INK_LINK and
+                    not any(st.one_line or st.y1 - st.y0 < 3 * st.sp for st in (a, b))):
+                if _measured_opening(gray, a, b, staves) or _crossing_bars(gray, syms, a, b):
+                    line = INK_LINK
             if left >= INK_LINK or line >= INK_LINK or bars >= 0.5:
                 decided[k - 1], said[k - 1] = True, "line"
             elif left < INK_SPLIT and bars < 0.1 and margin >= INK_SPLIT and _braced(syms, a, b):
