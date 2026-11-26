@@ -1766,7 +1766,7 @@ def _part_names(rd: Reading, plans: list, texts: list, place: list) -> list[str 
 def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None, image=None,
           facts: dict | None = None, align: bool = True, roster: list[int] | None = None,
           clefs: list | None = None, among: list | None = None, rest_counts: dict | None = None,
-          note_ids: set[int] | None = None) -> str:
+          note_ids: set[int] | None = None, trial_notes: bool = False) -> str:
     """``image``: the page (PIL image or grey array), for what is read off the ink here (dashes after words).
     ``align``: False counts every system's staves into the parts from the top, whatever they say (as the writer
     did before _align_systems), for a caller that places a system's staves itself.
@@ -1783,7 +1783,8 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
     ``untied`` ((note, partner or None) of each tie read and not written) and ``div``. ``rest_counts``: counts read
     off the H-bars, by box, when supplied instead of OCR text. ``facts["rest_columns"]`` records the count written in
     every part or why a count was set aside, by (system, column). ``note_ids`` receives the detector IDs of
-    the notes emitted by a successful write."""
+    the notes emitted by a successful write. The opening trial also asks for the written notes'
+    locations and sounding values in ``facts["trial_notes"]``."""
     L = rd.layout
     gray = mask = None
     if image is not None:
@@ -1817,6 +1818,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
     names = _part_names(rd, plans, texts, place)
     groups = _part_groups(rd, plans, place)
     written = set() if note_ids is not None else None
+    note_trace = [] if trial_notes else None
     for n, pl in enumerate(plans):
         for g, (a, b, sym) in enumerate(groups):
             if a == n:
@@ -2176,10 +2178,17 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                             continue
                         for kind, payload, below in e.pre:
                             _direction(meas, (e.x, kind, payload, below), staff_no if len(pl.staves) > 1 else None)
-                        _note(meas, e, units(dur), voice_no, staff_no if len(pl.staves) > 1 else None,
+                        written_duration = units(dur)
+                        _note(meas, e, written_duration, voice_no, staff_no if len(pl.staves) > 1 else None,
                               whole_rest=not meter_shown)
-                        if written is not None and e.kind == "note" and e.si >= 0 and L.syms[e.si].det >= 0:
-                            written.add(L.syms[e.si].det)
+                        if (written is not None or note_trace is not None) and e.kind == "note" and e.si >= 0:
+                            det = L.syms[e.si].det
+                            if det >= 0 and written is not None:
+                                written.add(det)
+                            if det >= 0 and note_trace is not None:
+                                pitch = (e.step, e.octave, e.alter) if not e.unpitched else None
+                                duration = Fraction(written_duration, div) if e.grace == "none" else None
+                                note_trace.append((det, st["staff"], staff_no, number, pitch, duration, e.tie, e.tie_stop))
                         for kind, payload, below in e.post:
                             _direction(meas, (e.x, kind, payload, below), staff_no if len(pl.staves) > 1 else None)
                         if not e.chord:
@@ -2227,6 +2236,8 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                      unvoiced=[[staff, bar, why] for (staff, bar), why in sorted(unvoiced.items())])
         if roster is not None:
             facts["roster"] = unexplained
+        if note_trace is not None:
+            facts["trial_notes"] = note_trace
     ET.indent(root)
     xml = '<?xml version="1.0" encoding="UTF-8"?>\n' + \
         '<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" ' \

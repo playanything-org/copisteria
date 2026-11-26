@@ -119,11 +119,15 @@ def _read_page(dets, cands, feats, im, model, texts, device, attention=True):
     if rd.opening_trial is None:
         return rd, write.write(rd, texts=texts, image=im)
 
-    def written(reading):
-        notes = set()
-        return (notes,), write.write(reading, texts=texts, image=im, note_ids=notes)
+    facts = {}
 
-    rd, (_, xml) = rd.opening_trial(rd, written, written(rd))
+    def written(reading):
+        nonlocal facts
+        notes, facts = set(), {}
+        xml = write.write(reading, texts=texts, image=im, note_ids=notes, facts=facts, trial_notes=True)
+        return (notes,), xml
+
+    rd, (_, xml) = rd.opening_trial(rd, written, written(rd), audit=lambda _: (facts,))
     return rd, xml
 
 

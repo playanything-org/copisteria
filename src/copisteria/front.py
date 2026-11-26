@@ -139,10 +139,13 @@ class OpeningJoins:
     so that fitting a layout with more or fewer staves does not renumber a join."""
     allowed: frozenset[tuple[float, float]] = frozenset()
     found: set[tuple[float, float]] = field(default_factory=set)
+    legacy: set[tuple[float, float]] = field(default_factory=set)
 
-    def accepts(self, upper: Staff, lower: Staff) -> bool:
+    def accepts(self, upper: Staff, lower: Staff, *, partial: bool = False) -> bool:
         gap = (upper.y1, lower.y0)
         self.found.add(gap)
+        if not partial:
+            self.legacy.add(gap)
         return gap in self.allowed
 
 
@@ -924,7 +927,7 @@ def _links(syms: list[Sym], staves: list[Staff], gray=None, levels=None,
                 a, b = staves[k - 1], staves[k]
                 opening = _measured_opening(gray, a, b, staves)
                 if opening is not None and not any(_staff_continues_left(gray, st, opening) for st in (a, b)):
-                    if opening_joins.accepts(a, b):
+                    if opening_joins.accepts(a, b, partial=True):
                         decided[k - 1], said[k - 1] = True, "line"
     return [bool(v) for v in decided], said
 

@@ -10,7 +10,8 @@ again with it (``read_revised``). Ink-path pages only (the cuts are the joint se
 """
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
+from dataclasses import dataclass
 from fractions import Fraction
 
 OVERFULL = Fraction(7, 4)          # a voice holding this many bars of the meter is a candidate for a missed line
@@ -119,28 +120,47 @@ def read_for_opening_trials(read, *args, **kwargs):
     found = OpeningJoins()
     base = read(*args, **kwargs, opening_joins=found)
     if found.found:
-        def trial(base, write, base_written):
+        def trial(base, write, base_written, *, audit=None):
             accepted = frozenset()
             best = base, base_written
-            base_notes, _ = base_written
-            note_ids = set().union(*base_notes)
-            base_columns = [_note_columns(base.layout, ids) for ids in base_notes]
-            for gap in sorted(found.found):
-                allowed = accepted | {gap}
+            partial = found.found - found.legacy
+            best_facts = audit(base) if partial and audit is not None else None
+
+            def try_gaps(gaps, *, guarded):
+                nonlocal accepted, best, best_facts
+                original, (base_notes, _) = best
+                note_ids = set().union(*base_notes)
+                base_columns = [_note_columns(original.layout, ids) for ids in base_notes]
                 try:
-                    candidate = read(*args, **kwargs, opening_joins=OpeningJoins(allowed))
-                    written = write(candidate)
+                    base_audit = _written_page(original.layout, best_facts) if guarded and best_facts is not None else None
                 except TimeoutError:
-                    break
-                except Exception:
-                    continue
-                candidate_notes, _ = written
-                if any(not old.issubset(new) for old, new in zip(base_notes, candidate_notes, strict=True)):
-                    continue
-                columns = _note_columns(candidate.layout, note_ids)
-                if any(_merges_written_bars(before, columns) for before in base_columns):
-                    continue
-                accepted, best = allowed, (candidate, written)
+                    return False
+                for gap in sorted(gaps):
+                    allowed = accepted | {gap}
+                    try:
+                        candidate = read(*args, **kwargs, opening_joins=OpeningJoins(allowed))
+                        written = write(candidate)
+                        candidate_notes, _ = written
+                        if any(not old.issubset(new) for old, new in zip(base_notes, candidate_notes, strict=True)):
+                            continue
+                        columns = _note_columns(candidate.layout, note_ids)
+                        if any(_merges_written_bars(before, columns) for before in base_columns):
+                            continue
+                        candidate_facts = audit(candidate) if best_facts is not None else None
+                        if base_audit is not None and _regresses_written_page(
+                                base_audit, _written_page(candidate.layout, candidate_facts)):
+                            continue
+                    except TimeoutError:
+                        return False
+                    except Exception:
+                        continue
+                    accepted, best, best_facts = allowed, (candidate, written), candidate_facts
+                return True
+
+            # The older openings already belong to the installed reader's output. Establish that
+            # reading first, then compare each new partial opening to what the installed reader writes.
+            if (not found.legacy or try_gaps(found.legacy, guarded=False)) and partial:
+                try_gaps(partial, guarded=True)
             return best
 
         base.opening_trial = trial
@@ -163,4 +183,99 @@ def _merges_written_bars(before, after):
         slot = staff, location
         if bars.setdefault(slot, bar) != bar:
             return True
+    return False
+
+
+@dataclass(frozen=True)
+class _WrittenStaff:
+    part: int
+    number: int
+    count: int
+    system: tuple[tuple[float, float], ...]
+
+
+@dataclass(frozen=True)
+class _WrittenVariant:
+    plan: list[tuple[int, ...]]
+    staves: dict[tuple[float, float], _WrittenStaff]
+    notes: dict[tuple, Counter]
+    occurrences: Counter[int]
+
+
+def _written_page(layout, writes):
+    from .front import System, _braced
+    from .write import _braced_pairs
+
+    tracks = [(staff.y0, staff.y1) for staff in layout.staves]
+    physical = sorted(range(len(tracks)), key=lambda staff: tracks[staff])
+    whole_page = System(physical)
+    braces = set()
+    for symbol in layout.syms:
+        if symbol.cls == "grpSym_brace" and symbol.det >= 0:
+            for i in _braced_pairs(layout, whole_page, [symbol]):
+                upper, lower = physical[i:i + 2]
+                if _braced([symbol], layout.staves[upper], layout.staves[lower]):
+                    braces.add((tracks[upper], tracks[lower]))
+
+    variants = []
+    for facts in writes:
+        plans = [tuple(plan.staves) for plan in facts["plans"]]
+        slots = {slot: (part, number, len(plan)) for part, plan in enumerate(plans)
+                 for number, slot in enumerate(plan, 1)}
+        placed = {}
+        for system, places in zip(layout.systems, facts["place"], strict=True):
+            rows = tuple(tracks[k] for k in system.staves)
+            for slot, k in places.items():
+                placed[tracks[k]] = _WrittenStaff(*slots[slot], rows)
+        notes = defaultdict(Counter)
+        occurrences = Counter()
+        for det, staff, number, bar, *sounding in facts["trial_notes"]:
+            notes[(det, tracks[staff], number, bar)][tuple(sounding)] += 1
+            occurrences[det] += 1
+        variants.append(_WrittenVariant(plans, placed, notes, occurrences))
+    return braces, variants
+
+
+def _regresses_written_page(before, after):
+    old_braces, prior = before
+    new_braces, proposed = after
+    for old, new in zip(prior, proposed, strict=True):
+        if _regresses_written_parts(old.staves, new.staves, old_braces, new_braces):
+            return True
+        if any(old.notes[key] - new.notes[key] for key in old.notes.keys() & new.notes.keys()):
+            return True
+        # Repeating a figure into other bars preserves the set of detector IDs while adding music.
+        if any(new.occurrences[det] > count for det, count in old.occurrences.items()):
+            return True
+    if len(prior) == 2:
+        old_primary, old_placed = prior
+        primary, placed = proposed
+        if old_primary.plan == old_placed.plan and primary.plan == placed.plan:
+            # A larger joined system can become the template for placement across the page. It must
+            # not send a previously agreed staff in an untouched system to a different part or staff.
+            old_a, old_b, new_a, new_b = (v.staves for v in (*prior, *proposed))
+            for track in old_a.keys() & old_b.keys() & new_a.keys() & new_b.keys():
+                if (old_a[track] == old_b[track] and old_a[track].system == new_a[track].system and
+                        new_a[track] != new_b[track]):
+                    return True
+    return False
+
+
+def _regresses_written_parts(old, new, old_braces, new_braces):
+    slots = {(place.system, place.part, place.number): track for track, place in new.items()}
+    original_parts, proposed_parts = {}, {}
+    for track in old.keys() & new.keys():
+        a, b = old[track], new[track]
+        upper = slots.get((b.system, b.part, b.number - 1))
+        if a.count == 1 and b.number > 1 and (upper, track) not in new_braces:
+            return True
+        if a.system == b.system:
+            # Part numbers can change. The physical staves sharing one part across unchanged
+            # systems must still belong together, and separate parts must stay separate.
+            if original_parts.setdefault(a.part, b.part) != b.part or proposed_parts.setdefault(b.part, a.part) != a.part:
+                return True
+    for upper, lower in old_braces:
+        if upper in old and lower in old and old[upper].part == old[lower].part:
+            if upper in new and lower in new and new[upper].part != new[lower].part:
+                return True
     return False
