@@ -11,6 +11,7 @@ again with it (``read_revised``). Ink-path pages only (the cuts are the joint se
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from copy import deepcopy
 from dataclasses import dataclass
 from fractions import Fraction
 
@@ -109,6 +110,21 @@ def read_revised(dets, width, height, model, device="cpu", attention=True, image
     if cuts:
         rd = read.read(dets, width, height, model, device=device, attention=attention, image=image, cuts=cuts, **kw)
         rd.revised = cuts
+    if rd.layout.staff_trials:
+        def read_staff(base, layout):
+            from .read import Reading
+
+            track = len(layout.staves) - 1
+            feats = kw.get("feats") if model.feat_dim else None
+            decoded = read.read_layout(layout, model, device=device, attention=attention, feats=feats,
+                                       system=layout.staves[track].system)
+            # Existing tracks keep the base's decoding. Only the extra track has a new reading.
+            tok = {i: deepcopy(t) for i, t in base.tok.items() if layout.syms[i].staff != track}
+            tok.update((i, t) for i, t in decoded.tok.items() if layout.syms[i].staff == track)
+            attn = {i: a for i, a in base.attn.items() if layout.syms[i].staff != track}
+            attn.update((i, a) for i, a in decoded.attn.items() if layout.syms[i].staff == track)
+            return Reading(layout=layout, tok=tok, attn=attn)
+        rd.read_staff = read_staff
     return rd
 
 
@@ -119,12 +135,12 @@ def read_for_opening_trials(read, *args, **kwargs):
 
     found = OpeningJoins()
     base = read(*args, **kwargs, opening_joins=found)
-    if found.found:
+    if found.found or getattr(base, "read_staff", None) is not None:
         def trial(base, write, base_written, *, audit=None):
             accepted = frozenset()
             best = base, base_written
             partial = found.found - found.legacy
-            best_facts = audit(base) if partial and audit is not None else None
+            best_facts = audit(base) if audit is not None else None
 
             def try_gaps(gaps, *, guarded):
                 nonlocal accepted, best, best_facts
@@ -159,8 +175,12 @@ def read_for_opening_trials(read, *args, **kwargs):
 
             # The older openings already belong to the installed reader's output. Establish that
             # reading first, then compare each new partial opening to what the installed reader writes.
-            if (not found.legacy or try_gaps(found.legacy, guarded=False)) and partial:
-                try_gaps(partial, guarded=True)
+            completed = not found.legacy or try_gaps(found.legacy, guarded=False)
+            if completed and partial:
+                completed = try_gaps(partial, guarded=True)
+            if completed and best_facts is not None and getattr(best[0], "read_staff", None) is not None:
+                from .staff_recovery import recover
+                return recover(*best, write, audit, best_facts)
             return best
 
         base.opening_trial = trial

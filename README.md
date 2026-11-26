@@ -30,6 +30,11 @@ Reading (what a page's MusicXML holds):
 - **A staff the line finder finds twice is one staff** (`front.py` `_without_doubles`). On a scan that bows or tilts,
   a staff line is two runs of rows and the finder groups each set of five into a staff, half a space apart. The
   system then held a staff the page does not print, and the page's parts were planned on it.
+- **An unused five-line track can fill a missing seat in a system** (`staff_recovery.py`). Its lines must run
+  along the system, match its spacing and show its barlines. A trial gives the extra staff the existing grid and
+  reads it from the same detections. Both written variants keep the original notes, rests and part assignments.
+  The extra staff needs a written note or rest from an unused detection, and adding it as the second staff of a
+  part requires a detector brace spanning that pair. The reader keeps the original write when a check fails.
 - **A shaded page is masked with its shading divided out** (`front.py` `page_mask`, `_shading`). One ink threshold
   for the whole page loses the line that opens a system in a photograph's bright patch, and the system read as two.
   A page whose paper tone varies by more than `SHADED` is masked flat; any other page keeps the mask it had.

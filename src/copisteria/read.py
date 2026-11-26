@@ -41,6 +41,7 @@ class Reading:
     tok: dict                                  # sym index -> per-head readings
     attn: dict = field(default_factory=dict)   # sym index -> [(other sym index, weight)] for changed symbols
     opening_trial: object = None              # optional reread from the same detections, see revise.py
+    read_staff: object = None                 # optional decode of one trial staff against the fixed page grid
 
 
 def _window_items(a: dict, s0: int, s1: int):
@@ -89,12 +90,17 @@ def read(dets: list[dict], width: float, height: float, model: EvidenceNet, devi
         cands = feats = None
     L = front.build(dets, width, height, image=image, cands=cands, cuts=cuts, layout=layout, most=most,
                     insist=insist, opening_joins=opening_joins)
+    return read_layout(L, model, device=device, attention=attention, feats=feats)
+
+
+@torch.no_grad()
+def read_layout(L, model, *, device="cpu", attention=True, feats=None, system=None) -> Reading:
     a = features.page_arrays(L, feats)
     keys = TOKEN_KEYS + (("feat", "cand") if feats is not None else ())
     n_sys = len(L.systems)
     tok: dict = {}
     attn: dict = {}
-    for s in range(n_sys):
+    for s in range(n_sys) if system is None else (system,):
         lo, hi = max(0, s - 1), min(n_sys - 1, s + 1)
         sel = _window_items(a, lo, hi)
         if len(sel) > MAX_TOK:

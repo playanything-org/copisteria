@@ -1819,6 +1819,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
     groups = _part_groups(rd, plans, place)
     written = set() if note_ids is not None else None
     note_trace = [] if trial_notes else None
+    rest_trace = [] if trial_notes else None
     for n, pl in enumerate(plans):
         for g, (a, b, sym) in enumerate(groups):
             if a == n:
@@ -2189,6 +2190,10 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                                 pitch = (e.step, e.octave, e.alter) if not e.unpitched else None
                                 duration = Fraction(written_duration, div) if e.grace == "none" else None
                                 note_trace.append((det, st["staff"], staff_no, number, pitch, duration, e.tie, e.tie_stop))
+                        if rest_trace is not None and e.kind in ("rest", "mrest") and e.si >= 0:
+                            det = L.syms[e.si].det
+                            if det >= 0:
+                                rest_trace.append((det, st["staff"], staff_no, number, Fraction(written_duration, div)))
                         for kind, payload, below in e.post:
                             _direction(meas, (e.x, kind, payload, below), staff_no if len(pl.staves) > 1 else None)
                         if not e.chord:
@@ -2238,6 +2243,7 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
             facts["roster"] = unexplained
         if note_trace is not None:
             facts["trial_notes"] = note_trace
+            facts["trial_rests"] = rest_trace
     ET.indent(root)
     xml = '<?xml version="1.0" encoding="UTF-8"?>\n' + \
         '<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" ' \

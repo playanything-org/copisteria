@@ -124,6 +124,7 @@ class Layout:
     height: float
     ink: bool = False                # staves and bars from the page's ink (else from the measure boxes)
     prior: dict | None = None        # what a caller's layout did to the reading (_with_layout), if one was given
+    staff_trials: list = field(default_factory=list)  # unused ink tracks worth trying against the written page
 
     def bar_box(self, staff: int, bar: int) -> Box:
         return self.syms[self.staves[staff].bars[bar]].box
@@ -1250,25 +1251,25 @@ def _reconcile(syms: list[Sym], staves: list[Staff], sy: System, ref: int) -> No
 
 
 # ------------------------------------------------------------------------------------------------- ink path
-def _ink_staves(gray, syms: list[Sym], spare: list | None = None) -> list[Staff] | None:
+def _ink_staves(gray, syms: list[Sym], spare: list | None = None, tracks: list | None = None) -> list[Staff] | None:
     """Staves from the staff lines in the ink: the page as it is, and the page cleaned (clean_page) -- a scan's
     tinted, shaded or grainy paper reads as ink to the line finder -- whichever set the detector's confident
     symbols confirm better (the raw page unless the cleaned one is clearly better). ``spare`` is given the staves
     that set saw and did not take (_spare_staves), likeliest first."""
     mine: list = []
     theirs: list = []
-    staves = _ink_staves_from(gray, gray, syms, mine)
-    other = _ink_staves_from(clean_page(gray), gray, syms, theirs)
+    staves = _ink_staves_from(gray, gray, syms, mine, tracks)
+    other = _ink_staves_from(clean_page(gray), gray, syms, theirs, tracks)
     if other is not None and (staves is None or _staves_score(other, syms) > 1.02 * _staves_score(staves, syms)):
         staves, mine = other, theirs
     if spare is not None and staves is not None:
         spare.extend(mine)
     if staves is not None:
-        _line_starts(gray, staves)
+        _line_starts(gray, staves, tracks)
     return staves
 
 
-def _line_starts(gray, staves: list[Staff]) -> None:
+def _line_starts(gray, staves: list[Staff], tracks: list | None = None) -> None:
     """Each staff's line_x0: where the line finder starts its lines when near-white is paper (STAFF_PAPER_TOL).
     Its own threshold is 254 on a page with pure white, so a JPEG's or a screen capture's faint noise beside a brace
     (247-253 on 255 paper) is ink to it, joins the brace to the ends of the lines, and the staff starts on the brace,
@@ -1277,7 +1278,9 @@ def _line_starts(gray, staves: list[Staff]) -> None:
     from PIL import Image
 
     from .vision.page.staves import find_staves
-    found = find_staves(Image.fromarray(gray), paper_tol=STAFF_PAPER_TOL).staves
+    found = find_staves(Image.fromarray(gray), paper_tol=STAFF_PAPER_TOL, alternatives=tracks).staves
+    if tracks is not None:
+        tracks.extend(found)
     for st in staves:
         near = [f for f in found if abs((f.top + f.bottom) / 2 - st.mid) < st.sp]
         if near:
@@ -1396,14 +1399,16 @@ def _spare_staves(m, staves: list[Staff], syms: list[Sym], claimed: set) -> list
     return spare
 
 
-def _ink_staves_from(page, gray, syms: list[Sym], spare: list | None = None) -> list[Staff] | None:
+def _ink_staves_from(page, gray, syms: list[Sym], spare: list | None = None, tracks: list | None = None) -> list[Staff] | None:
     """Staves from the staff lines in ``page`` (vision.page.staves: five long thin runs at one spacing), each
     holding the detected measure boxes that sit on it. A row of measure boxes no ink staff explains (a staff the
     line finder missed) is a staff of its own, as on the box path."""
     from PIL import Image
 
     from .vision.page.staves import find_staves
-    m = find_staves(Image.fromarray(page))
+    m = find_staves(Image.fromarray(page), alternatives=tracks)
+    if tracks is not None:
+        tracks.extend(m.staves)
     if not m.staves or m.spacing <= 0:
         return None
     # the measure boxes' own staff space checks the line finder (a skewed or curved page gives it false staves)
@@ -2042,7 +2047,8 @@ def build(dets: list[dict], width: float, height: float, image=None, cands: list
         gray = unframe(np.asarray(image.convert("L") if hasattr(image, "convert") else image))
     syms = merge(dets)
     spare: list = []
-    staves = _ink_staves(gray, syms, spare) if gray is not None else None
+    tracks = [] if opening_joins is not None and layout is None else None
+    staves = _ink_staves(gray, syms, spare, tracks) if gray is not None else None
     mask = page_mask(gray) if gray is not None else None
     ink_path = bool(staves)
     if not staves:
@@ -2103,5 +2109,9 @@ def build(dets: list[dict], width: float, height: float, image=None, cands: list
         _assign(syms, staves, only=new)
     sps = sorted(st.sp for st in staves)
     sp = sps[len(sps) // 2] if sps else 10.0
-    return Layout(syms=syms, staves=staves, systems=systems, sp=sp, width=width, height=height, ink=ink_path,
-                  prior=prior)
+    built = Layout(syms=syms, staves=staves, systems=systems, sp=sp, width=width, height=height, ink=ink_path,
+                   prior=prior)
+    if tracks and staves:
+        from .staff_recovery import proposals
+        built.staff_trials = proposals(built, tracks, mask)
+    return built

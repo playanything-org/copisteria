@@ -1,3 +1,4 @@
+# Modified by Play Anything (https://github.com/playanything-org/copisteria): see README.md.
 """Staff lines from the ink, without a model.
 
 A staff line is the one thing on a page that is a long, thin, horizontal run of ink. Every row of the
@@ -69,7 +70,7 @@ class StaffMap:
 
 
 def find_staves(image: Image.Image, min_run_frac: float = 0.05, rel_cover: float = 0.7, floor_cover: float = 0.05,
-                close_px: int = 2, paper_tol: float = 0.0) -> StaffMap:
+                close_px: int = 2, paper_tol: float = 0.0, alternatives: list[Staff] | None = None) -> StaffMap:
     """``paper_tol``: levels within this share of the way from the paper (median) to the ink (1st percentile) are
     paper, whatever the threshold says. The threshold is 254 on any page with pure white (otsu), so the faint noise
     a JPEG or a screen capture leaves beside its ink (247-253 on 255 paper) is ink to it, and joins a brace to the
@@ -84,7 +85,7 @@ def find_staves(image: Image.Image, min_run_frac: float = 0.05, rel_cover: float
     coverage, x0, x1 = long_run_profile(ink, min_run)
     min_cover = max(floor_cover, rel_cover * float(np.percentile(coverage, 95)))
     lines = join_split_lines(find_lines(coverage, x0, x1, min_cover))
-    return StaffMap(staves=group_staves(lines), lines=lines, profile=coverage, ink_threshold=thr,
+    return StaffMap(staves=group_staves(lines, alternatives=alternatives), lines=lines, profile=coverage, ink_threshold=thr,
                     cover_threshold=min_cover)
 
 
@@ -164,7 +165,7 @@ def join_split_lines(lines: list[Line], frac: float = 0.3) -> list[Line]:
     return out
 
 
-def group_staves(lines: list[Line], tol: float = 0.25) -> list[Staff]:
+def group_staves(lines: list[Line], tol: float = 0.25, alternatives: list[Staff] | None = None) -> list[Staff]:
     """Five lines at one spacing, sharing some x-extent, are a staff. Lines need not be consecutive in the
     list: a row between two staff lines that scored (a beam, the tail of a slur) lies half a spacing off
     every target and is simply not chosen. Among the staves ``_trials`` turns up the strongest (summed line
@@ -182,11 +183,14 @@ def group_staves(lines: list[Line], tol: float = 0.25) -> list[Staff]:
         if min(line.x1 for line in run) <= max(line.x0 for line in run):
             continue                            # five lines at one spacing that never share a column
         found.append((sum(line.score for line in run), members))
+    # Keep the ordinary strongest-first selection even when the writer asks to see its alternatives.
     used, staves = set(), []
     for _, members in sorted(found, key=lambda t: -t[0]):
         if used.isdisjoint(members):
             used.update(members)
             staves.append(Staff(lines=[lines[m] for m in members]))
+        elif alternatives is not None:
+            alternatives.append(Staff(lines=[lines[m] for m in members]))
     return sorted(staves, key=lambda s: s.top)
 
 
